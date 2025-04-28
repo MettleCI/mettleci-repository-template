@@ -1,0 +1,227 @@
+---
+version: 2
+#==================
+# Plan to promote assests from DEV to CI environment. 
+# The plan includes Compliance and Unit Testing
+#==================
+plan:
+  project-key: MYPROJ  # Links plan to its parent project.
+  key: CI  # Unique plan identifier
+  name: Continuous Integration
+variables:  # Plan-specific variables which override identically named global and project variables
+  DomainName: services.mycorp.com:59445
+  EnvironmentID: ci
+  ProjectName: MyProjectName_${bamboo.EnvironmentID}
+  ServerName: engine.mycorp.com
+  ServerUsername: mciworkb
+  DatastageCredentials: &datastage_credentials DataStageCredentials  # Anchor for Datastage shared credential variable substitution
+  SshCredentials: &ssh_credentials SSHKeyName  # Anchor for SSH shared credential variable substitution
+  ComplianceFatalTags: fail-ci
+stages:
+- Deployment:
+    manual: false
+    final: false
+    jobs:
+    - Deploy Changes
+- Tests:
+    manual: false
+    final: false
+    jobs:
+    - Static Analysis
+    - Unit Tests
+Deploy Changes:
+  key: DC
+  tasks:
+  - clean
+  - checkout:
+      force-clean-build: true
+      description: Checkout project repository
+  - mci-datastage-admin:  # Creates (or tests existence of) DataStage project in '${bamboo.ProjectName}'
+      server: ${bamboo.ServerName}
+      default-location: 'true'
+      domain: ${bamboo.DomainName}
+      admin-type: CREATE_PROJECT
+      project-name: ${bamboo.ProjectName}
+      dsclient: DataStageClient  # A reference to your configured Server capability
+      shared-credentials: *datastage_credentials
+      description: Create DataStage project
+  - mci-properties-configuration:  # Substitute placeholders in config files with environment-specific values from plan variables and override files
+      baseDir: datastage
+      filePatterns: |-
+        *.apt
+        DSParams
+        Parameter Sets/*/*
+      outputDir: config
+      overrideFile: var.${bamboo.EnvironmentID}
+      description: Substitute parameters in DataStage config
+  - mci-sftp-upload:  # Transfer DataStage config and file system assets files in the local working directory to a remote server
+      transfer-pattern: filesystem/**/*,config/*
+      port: '22'
+      host: ${bamboo.ServerName}
+      destination-dir: ${bamboo.buildResultKey}-${bamboo.EnvironmentID}
+      username: ${bamboo.ServerUsername}
+      shared-credentials: *ssh_credentials
+      description: Transfer DataStage config and file system assets
+  - ssh:  # Deploy DataStage config and file system assets
+      host: ${bamboo.ServerName}
+      command: "# exit on failure\r\nset -e\r\n\r\n#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\r\n# Source DataStage environment\r\n#\r\ncase `uname` in\r\n    \"Windows\"*) \r\n        # Windows\r\n        DSHOME=`registry -p -u -k \"HKLM\\SOFTWARE\\Ascential Software\\DataStage\\DSEngine\\CurrentVersion\" -n DSEHome -3`\r\n        break\r\n        ;;\r\n    *)\r\n        # Linux/Unix\r\n        if [ -f \"/.dshome\" ]\r\n        then\r\n            DSHOME=`cat /.dshome`\r\n            . $DSHOME/dsenv\r\n        else\r\n            echo \"ERROR: .dshome is missing on server - is ${bamboo.ServerName} a valid datastage engine?\"\r\n            exit -1\r\n        fi\r\n        ;;\r\nesac\r\n\r\nBUILDHOME=`pwd`/${bamboo.buildResultKey}-${bamboo.EnvironmentID}\r\nPROJECTHOME=`$DSHOME/bin/dsjob -projectinfo ${bamboo.ProjectName} | tail -1 | awk -F \": \" '{print $2}' | tr -d '\\r'`\r\n#------------------------------------------------------------------------------\r\n\r\n\r\n\r\n#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\r\n# Deploy DataStage configurations\r\n#\r\n\r\n# DSParams\r\nif [ -f \"$BUILDHOME/config/DSParams\" ]\r\nthen\r\n    cp $BUILDHOME/config/DSParams $PROJECTHOME/\r\nfi\r\n\r\n# Projects APT Config files\r\nset -- $BUILDHOME/config/*.apt\r\nif [ -f \"$1\" ]\r\nthen\r\n    #mkdir -p ${bamboo_DatastageConfigPath}\r\n\r\n    # TODO: Find a better approach for this\r\n    #rm -f ${bamboo_DatastageConfigPath}/*.apt\r\n    #cp $BUILDHOME/config/*.apt ${bamboo_DatastageConfigPath}\r\n\r\n    grep -e \"resource disk\" -e \"resource scratchdisk\" $BUILDHOME/config/*.apt | awk -F \"[\\\"']\" '{print $2}' | sort -u | xargs -n1 mkdir -p\r\nfi\r\n#------------------------------------------------------------------------------\r\n\r\n\r\n\r\n#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\r\n# Defer to filesystem deployment script\r\n#\r\n\r\nif [ -f \"$BUILDHOME/filesystem/deploy.sh\" ]\r\nthen\r\n    cd $BUILDHOME/filesystem\r\n     \r\n    chmod u+x $BUILDHOME/filesystem/deploy.sh\r\n    $BUILDHOME/filesystem/deploy.sh -p ${bamboo.ProjectName} -e ${bamboo.EnvironmentID}\r\nelse\r\n    echo \"ERROR: filesystem/deploy.sh script not found, skipping\"\r\n    exit -1\r\nfi\r\n#------------------------------------------------------------------------------\""
+      authentication:
+        username: ${bamboo.ServerUsername}
+        shared-credentials: *ssh_credentials
+      description: Deploy DataStage config and file system assets
+  - mci-incremental-datastage-deployment:  # Provision directory of ISX files to the Datastage project specified by the ProjectName variable
+      server: ${bamboo.ServerName}
+      params-dir: config/Parameter Sets
+      project-name: ${bamboo.ProjectName}
+      dsclient: DataStageClient  # Reference to your configured Server capability
+      max-threads: '8'
+      domain: ${bamboo.DomainName}
+      location: datastage
+      deploy-params: 'true'
+      parseLogs: 'true'
+      shared-credentials: *datastage_credentials
+      description: Deploy DataStage project
+  final-tasks:
+  - ssh:  # Cleanup temporary files
+      host: ${bamboo.ServerName}
+      command: "BUILDHOME=`pwd`/${bamboo.buildResultKey}-${bamboo.EnvironmentID}\r\nrm -rf $BUILDHOME"
+      authentication:
+        username: ${bamboo.ServerUsername}
+        shared-credentials: *ssh_credentials
+      description: Cleanup temporary files
+  artifacts:
+  - name: Config Overrides
+    pattern: var.*
+    shared: true
+    required: false
+  - name: Filesystem Assets
+    location: filesystem
+    pattern: '**/*'
+    shared: true
+    required: false
+  - name: Datastage Assets
+    location: datastage
+    pattern: '**/*'
+    shared: true
+    required: false
+  artifact-subscriptions: []
+Static Analysis (Warning):  # Job analysis using rules NOT tagged fatal
+  key: SA
+  tasks:
+  - clean
+  - checkout:
+      repository: Compliance_LS  # Name of compliance rules repository linked to the Bamboo project
+      path: rules
+      force-clean-build: true
+      description: Checkout Compliance repository
+  - mci-build-commit-log:
+      repository: default
+      log: build_deltas.txt
+      description: Calculate project changes
+  - mci-compliance-test:
+      include-rule-tags: '*'                                       # Tags identifying compliance rules to be included
+      exclude-rule-tags: '${bamboo.ComplianceFatalTags},not-used'  # Tags identifying compliance rules to be excluded
+      rules-location: rules
+      compliance-list: build_deltas.txt
+      compliance-type: COMPLIANCE_DIRECTORY
+      failOnTestFailure: 'false'
+      description: Perform static analysis - WARN  
+  artifact-subscriptions:
+  - artifact: Datastage Assets
+    destination: datastage
+Static Analysis (Fatal):  # Job analysis using rules tagged fatal
+  key: SAF
+  tasks:
+  - clean
+  - checkout:
+      repository: Compliance_LS  # Name of compliance rules repository linked to the Bamboo project
+      path: rules
+      force-clean-build: true
+      description: Checkout Compliance repository
+  - mci-build-commit-log:
+      repository: default
+      log: build_deltas.txt
+      description: Calculate project changes
+  - mci-compliance-test:
+      include-rule-tags: '${bamboo.ComplianceFatalTags}'  # Tags identifying compliance rules to be included
+      exclude-rule-tags: 'not-used'                       # Tags identifying compliance rules to be excluded
+      rules-location: rules
+      compliance-list: build_deltas.txt
+      compliance-type: COMPLIANCE_DIRECTORY
+      failOnTestFailure: 'true'
+      description: Perform static analysis - FAIL   
+  artifact-subscriptions:
+  - artifact: Datastage Assets
+    destination: datastage
+Unit Tests:  # Unit Testing
+  key: UT
+  tasks:
+  - clean
+  - checkout:
+      force-clean-build: false
+      description: Checkout project repository
+  - mci-sftp-upload:
+      transfer-pattern: '**/*'
+      port: '22'
+      host: ${bamboo.ServerName}
+      destination-dir: /opt/dm/mci/specs/${bamboo.ProjectName}
+      source-dir: unittest
+      username: ${bamboo.ServerUsername}
+      shared-credentials: *ssh_credentials
+      description: Upload unit test specs
+  - mci-datastage-unit-tests:
+      server-name: ${bamboo.ServerName}
+      incremental: 'true'
+      project-name: ${bamboo.ProjectName}
+      domain-name: ${bamboo.DomainName}
+      specs-location: unittest
+      max-threads: '8'
+      reports-location: test-reports
+      dsinstall: DataStageClient  # A reference to your configured Server capability
+      shared-credentials: *datastage_credentials  # Datastage shared credential variable substitution
+      description: Execute unit tests for changed DataStage jobs
+  - mci-sftp-download:
+      destination-dir: test-reports
+      source-dir: /opt/dm/mci/reports
+      transfer-pattern: ${bamboo.ProjectName}/**/*.xml
+      port: '22'
+      host: ${bamboo.ServerName}
+      username: ${bamboo.ServerUsername}
+      shared-credentials: *ssh_credentials  # SSH shared credential variable substitution
+      description: Retrieve unit test results
+  - test-parser:
+      type: junit
+      ignore-time: false
+      test-results: test-reports/**/*.xml
+      description: Ingest unit test results
+  artifact-subscriptions: []
+repositories:
+- myproject:  # Linked repository of DataStage assets. Note that permissions must be granted to compliance repository
+    scope: global
+- Compliance_LS:  # Linked repository of compliance rules. Note taht permission must be granted to the DataStage repository
+    scope: global
+triggers:  # Definition of this plan's execution trigger(s)
+- polling:
+    period: '30'
+    description: RepoCheckin
+    repositories:
+    - myproject
+branches:
+  create: manually
+  delete: never
+  link-to-jira: true
+notifications:
+- events:
+  - plan-failed
+  recipients:
+  - responsible
+labels: []
+dependencies:
+  require-all-stages-passing: false
+  enabled-for-branches: true
+  block-strategy: none
+  plans: []
+other:
+  concurrent-build-plugin: '1'
+...
+

@@ -1,0 +1,20 @@
+---
+version: 2
+#==================
+#Build plan permissions allow a user to control access to the functions of the build plan. 
+#These include viewing, editing, building, cloning, and administering a build plan. 
+#==================
+plan:
+  key: MYPROJ-CI
+plan-permissions:
+- users:
+  - john
+  - paul
+  - george
+  - ringo
+- roles:
+  - logged-in
+  permissions:
+  - view
+  - edit
+...

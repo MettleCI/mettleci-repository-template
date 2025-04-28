@@ -1,0 +1,7 @@
+!include .\permissions\permissions-plan.yml
+---
+!include .\permissions\permissions-deploy.yml
+---
+!include .\devops\devops-ci.yml
+---
+!include .\devops\devops-deploy.yml

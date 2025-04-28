@@ -1,0 +1,193 @@
+# MettleCI pipeline template providing a pipeline stage which performs a generic
+# environmental deployment using MettleCI's advanced incremental deployment
+
+parameters:
+- name: UpdateDSParams
+  type: boolean
+  default: false
+- name: DomainName
+  type: string
+  default: ''
+- name: EngineName
+  type: string
+  default: ''
+- name: EnvironmentID
+  type: string
+  default: ''
+- name: EnvironmentName
+  type: string
+  default: ''
+- name: DatastageProject
+  type: string
+  default: ''
+- name: ProjectCacheDir
+  type: string
+  default: ''
+- name: IISUsername
+  type: string
+  default: ''
+- name: IISPassword
+  type: string
+  default: ''
+- name: MCIUsername
+  type: string
+  default: ''
+- name: MCIPassword
+  type: string
+  default: ''
+- name: PublishCompilationTests
+  type: boolean
+  default: false
+- name: mettlecicmd
+  type: string
+  default: ''
+- name: TestResultFiles
+  type: string
+  default: 'log/**/mettleci_compilation.xml'
+- name: ProjectTemplate
+  type: string
+  default: ''
+- name: MettleHomeDir
+  type: string
+  default: ''
+- name: PSSpecialHandling
+  type: boolean
+  default: false
+- name: AlternateJavaPath
+  type: string
+  default: ''
+
+jobs:
+  - deployment: Deploy_${{ parameters.EnvironmentID }}
+    displayName: Deploy to ${{ parameters.EnvironmentName }}
+    environment: ${{ parameters.EnvironmentName }}
+    variables:
+    - name: PSPropertiesConfig
+      ${{ if eq(parameters.PSSpecialHandling, true) }}:
+        value: '-filePattern "Parameter Sets/*/*"'
+      ${{ else }}:
+        value: ''
+    - name: PSDeploy
+      ${{ if eq(parameters.PSSpecialHandling, true) }}:
+        value: '-parameter-sets "config\Parameter Sets"'
+      ${{ else }}:
+        value: ''
+    - name: TagValue
+      value: ${{ parameters.EnvironmentID }}-$(Build.BuildNumber)
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+            persistCredentials: true
+          - script: |
+              echo "##vso[task.setvariable variable=PATH]${{ parameters.AlternateJavaPath }};$(PATH)"
+            displayName: "Set java version"
+            condition: ne('${{ parameters.AlternateJavaPath }}', '')
+          - script:
+              ${{ parameters.mettlecicmd }} datastage create-project ^
+                -domain ${{ parameters.DomainName }} ^
+                -username ${{ parameters.IISUsername }} -password ${{ parameters.IISPassword }} ^
+                -server ${{ parameters.EngineName }} -project ${{ parameters.DatastageProject }}
+            displayName: 'Create Project'
+          - ${{ if eq(parameters.UpdateDSParams, true) }}:
+            - script:
+                ${{ parameters.mettlecicmd }} remote download ^
+                  -host ${{ parameters.EngineName }} ^
+                  -username ${{ parameters.MCIUsername }} -password ${{ parameters.MCIPassword }} ^
+                  -source ${{ parameters.ProjectTemplate }}/ ^
+                  -destination $(System.DefaultWorkingDirectory)/templates/ ^
+                  -transferPattern "DSParams"
+              displayName: 'Fetch Template DSParams'
+            - script: |
+                if not exist artifacts mkdir artifacts
+              displayName: 'Create artifacts dir'  
+            - task: DownloadBuildArtifacts@0
+              inputs:
+                buildType: 'current'
+                downloadPath: $(System.DefaultWorkingDirectory)\artifacts         
+                artifactName: 'Diffs'  # subdir of downloadPath named this created 
+                downloadType: 'single' # every file in the artifact created there        
+                parallelizationLimit: '1'   # one file at a time please.
+              displayName: 'Fetch diff'     
+            - script:
+                ${{ parameters.mettlecicmd }} dsparams merge ^
+                  -before $(System.DefaultWorkingDirectory)/templates/DSParams ^
+                  -after datastage/DSParams ^
+                  -diff $(System.DefaultWorkingDirectory)/artifacts/Diffs/DSParams.diff  
+              displayName: 'Generate merged DSParams'
+          - script:
+              ${{ parameters.mettlecicmd }} properties config ^
+                -baseDir datastage ^
+                -filePattern "*.sh" ^
+                -filePattern "DSParams" ^
+                ${{ variables.PSPropertiesConfig }} ^
+                -properties varfiles/var.${{ parameters.EnvironmentID }} ^
+                -outDir config
+            displayName: 'Configure Properties'
+          - script:
+              ${{ parameters.mettlecicmd }} remote execute ^
+                -host ${{ parameters.EngineName }} ^
+                -username ${{ parameters.MCIUsername }} -password ${{ parameters.MCIPassword }} ^
+                -script config/cleanup.sh
+            displayName: 'Cleanup'
+          - script:
+              ${{ parameters.mettlecicmd }} remote upload ^
+                -host ${{ parameters.EngineName }} ^
+                -username ${{ parameters.MCIUsername }} -password ${{ parameters.MCIPassword }} ^
+                -source "." ^
+                -destination ${{ parameters.DatastageProject }} ^
+                -transferPattern "filesystem/**/*,config/*"
+            displayName: 'Upload config files'
+          - script:
+              ${{ parameters.mettlecicmd }} remote execute ^
+                -host ${{ parameters.EngineName }} ^
+                -username ${{ parameters.MCIUsername }} -password ${{ parameters.MCIPassword }} ^
+                -script config/deploy.sh
+            displayName: 'Execute deploy script'
+          - script:
+              ${{ parameters.mettlecicmd }} datastage deploy ^
+                -domain ${{ parameters.DomainName }} ^
+                -server ${{ parameters.EngineName }} ^
+                -username ${{ parameters.IISUsername }} -password ${{ parameters.IISPassword }} ^
+                -project ${{ parameters.DatastageProject }} ^
+                -project-cache ${{ parameters.ProjectCacheDir }} ^
+                -assets $(System.DefaultWorkingDirectory)\datastage ^
+                ${{ variables.PSDeploy }} ^
+                -threads 1 ^
+                -include-job-in-test-name
+            displayName: 'Deploy DataStage assets'
+          - ${{ if eq(parameters.PublishCompilationTests, true) }}:
+            - powershell: |
+                $fileExists = Test-Path -Path "$(System.DefaultWorkingDirectory)/${{ parameters.TestResultFiles }}"
+                Write-Output "##vso[task.setvariable variable=FileExists]$fileExists"
+              condition: always()
+              displayName: 'Check for results'
+            - task: PublishTestResults@2
+              condition: and(always(), eq(variables.fileExists, 'true'))
+              inputs:
+                testRunTitle: 'Post-Deploy DataStage Compilation - ${{ parameters.EnvironmentName }}'
+                testRunner: 'JUnit'
+                testResultsFiles: ${{ parameters.TestResultFiles }}
+                searchFolder: $(System.DefaultWorkingDirectory)
+                failTaskOnFailedTests: true
+              displayName: 'Publish compilation results'
+
+# --------------------------------------------------------------------------
+# This would have been the ideal place to tag the deployment, however 
+# Azure DevOps doesn't currently let you tag builds from within a template!
+# --------------------------------------------------------------------------
+#          - script:
+#              echo ##vso[build.addbuildtag]${{ variables.TagValue }}
+#            displayName: Tagging ADO build (${{ variables.TagValue }})
+#         - script: |
+#              echo Git user.name $(Build.RequestedFor)
+#              echo Git user.email $(Build.RequestedForEmail)
+#              echo Tag ${{ parameters.EnvironmentID }}-$(Build.BuildNumber)
+#              git config --global user.name $(Build.RequestedFor)
+#              git config --global user.email $(Build.RequestedForEmail)
+#              git tag -a ${{ variables.TagValue }} -m "MettleCI deployment to ${{ parameters.EnvironmentName }}"
+#              git push origin ${{ variables.TagValue }}
+#            workingDirectory: $(Build.SourcesDirectory)
+#            displayName: 'Tag Git commit'  

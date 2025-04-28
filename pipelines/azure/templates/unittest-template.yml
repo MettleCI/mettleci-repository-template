@@ -1,0 +1,99 @@
+# MettleCI pipeline template providing a pipeline stage which performs a generic
+# Unit Test of specified asssets
+
+parameters:
+- name: DomainName
+  default: ''
+- name: EngineName
+  default: ''
+- name: EnvironmentID
+  default: ''
+- name: EnvironmentName
+  default: ''
+- name: DatastageProject
+  default: ''
+- name: ProjectCacheDir
+  default: ''
+- name: IISUsername
+  default: ''
+- name: IISPassword
+  default: ''
+- name: MCIUsername
+  default: ''
+- name: MCIPassword
+  default: ''
+- name: UnitTestPath
+  default: ''
+- name: mettlecicmd
+  default: ''
+- name: AlternateJavaPath
+  type: string
+  default: ''
+
+jobs:
+  - job: Unit_Test_${{ parameters.EnvironmentName }}
+
+    steps:
+    - checkout: self
+    - script: |
+        echo "##vso[task.setvariable variable=PATH]${{ parameters.AlternateJavaPath }};$(PATH)"
+      displayName: "Set java version"
+      condition: ne('${{ parameters.AlternateJavaPath }}', '')
+    - script:
+        ${{ parameters.mettlecicmd }} properties config ^
+          -baseDir datastage ^
+          -filePattern "cleanup_unittest.sh" ^
+          -properties varfiles/var.${{ parameters.EnvironmentID }} ^
+          -outDir config
+      displayName: 'Configure Properties'
+    - script:
+        ${{ parameters.mettlecicmd }} remote execute ^
+          -host ${{ parameters.EngineName }} ^
+          -username ${{ parameters.MCIUsername }} -password ${{ parameters.MCIPassword }} ^
+          -script "config/cleanup_unittest.sh"
+      displayName: 'Cleanup'
+    - script:
+        ${{ parameters.mettlecicmd }} remote upload ^
+          -host ${{ parameters.EngineName }} ^
+          -username ${{ parameters.MCIUsername }} -password ${{ parameters.MCIPassword }} ^
+          -source unittest ^
+          -transferPattern "**/*" ^
+          -destination ${{ parameters.UnitTestPath }}/specs/${{ parameters.DatastageProject }}
+      displayName: 'Upload unit test specs'
+    - script: |
+        rmdir "unittest-reports" /S /Q
+        mkdir "unittest-reports"
+      displayName: 'Create unit test report dir'
+    - script:
+        ${{ parameters.mettlecicmd }} unittest test ^
+          -domain ${{ parameters.DomainName }} ^
+          -server ${{ parameters.EngineName }} ^
+          -username ${{ parameters.IISUsername }} -password ${{ parameters.IISPassword }} ^
+          -project ${{ parameters.DatastageProject }} ^
+          -specs unittest ^
+          -reports unittest-reports/${{ parameters.DatastageProject }} ^
+          -project-cache ${{ parameters.ProjectCacheDir }} ^
+          -test-suite "MettleCI Unit Tests - ${{ parameters.EnvironmentName }}"
+      displayName: 'Run Unit Tests'
+    - script:
+        ${{ parameters.mettlecicmd }} remote download ^
+          -host ${{ parameters.EngineName }} ^
+          -source ${{ parameters.UnitTestPath }}/reports ^
+          -destination unittest-reports ^
+          -transferPattern "${{ parameters.DatastageProject }}/**/*.xml" ^
+          -username ${{ parameters.MCIUsername }} -password ${{ parameters.MCIPassword }}
+      displayName: 'Download unit test reports'
+    - powershell: |
+        $fileExists = Test-Path -Path "unittest-reports/${{ parameters.DatastageProject }}/**/*.xml"
+        Write-Output "##vso[task.setvariable variable=FileExists]$fileExists"
+      condition: always()
+      displayName: 'Check for results'
+    - task: PublishTestResults@2
+      condition: and(always(), eq(variables.fileExists, 'true'))
+      inputs:
+        testRunTitle: 'MettleCI Unit Tests - ${{ parameters.EnvironmentName }}'
+        testRunner: 'JUnit'
+        testResultsFiles: unittest-reports/${{ parameters.DatastageProject }}/**/*.xml
+        searchFolder: $(System.DefaultWorkingDirectory)
+        failTaskOnFailedTests: true
+      displayName: 'Publish unit test results'

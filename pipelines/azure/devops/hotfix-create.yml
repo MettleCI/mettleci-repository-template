@@ -1,0 +1,249 @@
+#   ___                      ______ _            _ _
+#  / _ \                     | ___ (_)          | (_)
+# / /_\ \_____   _ _ __ ___  | |_/ /_ _ __   ___| |_ _ __   ___  ___
+# |  _  |_  / | | | '__/ _ \ |  __/| | '_ \ / _ \ | | '_ \ / _ \/ __|
+# | | | |/ /| |_| | | |  __/ | |   | | |_) |  __/ | | | | |  __/\__ \
+# \_| |_/___|\__,_|_|  \___| \_|   |_| .__/ \___|_|_|_| |_|\___||___/
+#                                    | |
+#                                    |_|
+# -------------------------------------------------------------------
+# MettleCI - DevOps for DataStage
+# (C)2020-2023 Data Migrators Pty Ltd
+# This Azure DevOps pipeline is unsuported and is provided only as a 
+# practical example of how to use the MettleCI Command Line Interface 
+# -------------------------------------------------------------------
+# This pipeline is triggered by the completion of the pipeline called
+# ADO-WWI-117-DevOps-CI which acts on the main branch of the repo.
+# It creates a new 'hotfix' branch in preparation for potential
+# production hotfixes.
+# -------------------------------------------------------------------
+
+# This hotfix construction pipeline will...
+# - Create a new hotfix branch and tag it (so it's visible in the Azure interface), and 
+# - Deploy the same codebase released to PROD to the '{project}_hf' DataStage project
+#   which is where youb will develop hotfixes
+
+trigger: none                           # Prevent this pipeline triggering on a commit 
+resources:
+  pipelines:
+  - pipeline: MyTrigger                 # Reference (used below) to the pipeline which triggered *this* pipeline
+    source: Azure-DevOps-CI       # The name of the pipeline referenced by this pipeline resource.
+    trigger: true
+
+# Project-related variables
+variables:
+  - name: BaseIISProjectName
+    value: <BASE_PROJECT_NAME>
+  - name: PS_SpecialHandling
+    value: true
+  - name: EnvID
+    value: "hf"
+  - name: EnvName
+    value: "DevOps - Hotfix"
+  - name: BranchName
+    value: hotfix/${{ variables.EnvID }}.$(resources.pipeline.MyTrigger.runName)
+  - name: Datastage_Project
+    value: ${{ variables.BaseIISProjectName }}_${{ variables.EnvID }}
+  - name: HotfixProjectAzureRepo
+    value: ssh://git@ssh.dev.azure.com:v3/mettleci/$(System.TeamProject)/$(Build.Repository.Name)
+
+
+stages:
+#------------------------------------------------------------------------------
+# Diagnostics
+#------------------------------------------------------------------------------
+- stage: Diagnostics
+
+  jobs:
+  - job: Diagnostics
+    pool:
+      name: <AGENT_POOL_NAME>
+      demands:
+      - MettleCI.CLI
+      - DataStage.Version -equals 11.7
+    variables:
+      - group: <NONPROD_VARIABLE_GROUP>
+    steps:
+    - script: |
+        echo "Diagnostics - 11.7 Non-Production Variable Group"
+        echo "IISUsername: $(IISUsername)"
+        echo "IISPassword: $(IISPassword)"
+        echo "IISDomainName: $(IISDomainName)"
+        echo "IISEngineName: $(IISEngineName)"
+        echo "EnvID: $(EnvID)"
+        echo "BaseIISProjectName: ${{ variables.BaseIISProjectName }}"
+        echo "Datastage_Project: ${{ variables.Datastage_Project }}"
+        echo "ProjectCacheDir: $(AgentMettleHome)\cache\$(IISEngineName)\${{ variables.Datastage_Project }}"
+        echo "IISUsername: $(IISUsername)"
+        echo "IISPassword: $(IISPassword)"
+        echo "MCIUsername: $(MCIUsername)"
+        echo "MCIPassword: $(MCIPassword)"
+        echo "AgentMettleCmd: $(AgentMettleCmd)"
+        echo "ADOProject: $(System.TeamProject)"
+        echo "SourceRepo: $(Build.Repository.Name)"
+        echo "Agent.Name: $(Agent.Name)"
+        echo "Repo resource: $[ resources.repositories['Compliance'].name ]"
+        echo "Build reason: $(Build.Reason)"
+        echo "Build source version: $(Build.SourceVersion)"
+        echo "Build source version message: $(Build.SourceVersionMessage)"
+        echo "pipelineID: $(resources.pipeline.MyTrigger.pipelineID)"
+        echo "runName: $(resources.pipeline.MyTrigger.runName)"
+        echo "runID: $(resources.pipeline.MyTrigger.runID)"
+        echo "runURI: $(resources.pipeline.MyTrigger.runURI)"
+        echo "sourceBranch: $(resources.pipeline.MyTrigger.sourceBranch)"
+        echo "sourceCommit: $(resources.pipeline.MyTrigger.sourceCommit)"
+        echo "sourceProvider: $(resources.pipeline.MyTrigger.sourceProvider)"
+        echo "requestedFor: $(resources.pipeline.MyTrigger.requestedFor)"
+        echo "requestedForID: $(resources.pipeline.MyTrigger.requestedForID)"
+      displayName: 'Diagnostics v11.7 Non-Production'
+    - script: |
+        set | sort
+      displayName: "Get environment variables"
+
+#------------------------------------------------------------------------------
+# Create the Hotfix branch
+#------------------------------------------------------------------------------
+- stage: Create_HF_Branch
+  variables:
+    - group: <NONPROD_VARIABLE_GROUP>
+
+  pool:
+    name: <AGENT_POOL_NAME>
+    demands:
+    - MettleCI.CLI
+    - DataStage.Version -equals 11.7
+
+  jobs:
+
+  - job:
+    displayName: 'Create hotfix branch'
+    steps:
+    - checkout: self
+      persistCredentials: true
+    - script: |
+        echo Git user.name "$(Build.RequestedFor)"
+        echo Git user.email "$(Build.RequestedForEmail)"
+        git config --global --replace-all user.name "$(Build.RequestedFor)"
+        git config --global --replace-all user.email "$(Build.RequestedForEmail)"
+        git fetch --all
+        git checkout -b ${{ variables.BranchName }}
+        git status
+        git push --set-upstream origin ${{ variables.BranchName }}
+        git status
+      workingDirectory: $(Build.SourcesDirectory)
+      displayName: 'Create Git hotfix branch'
+
+#------------------------------------------------------------------------------
+# Deploy to the Hotfix DataStage project
+#------------------------------------------------------------------------------
+- stage: Deploy_HF
+  variables:
+    - group: <NONPROD_VARIABLE_GROUP>
+    - name: Datastage_Project
+      value: ${{ variables.BaseIISProjectName }}_${{ variables.EnvID }}
+    - name: TagValue
+      value: ${{ variables.EnvID }}-$(Build.BuildNumber)
+
+
+  pool:
+    name: <AGENT_POOL_NAME>
+    demands:
+    - MettleCI.CLI
+    - DataStage.Version -equals 11.7
+
+  jobs:
+  # Call the MettleCI DataStage deployment template
+  - template: /pipelines/azure/templates/deploy-template.yml
+    parameters:
+      DomainName: $(IISDomainName)
+      EngineName: $(IISEngineName)
+      EnvironmentID: ${{ variables.EnvID }}
+      EnvironmentName: ${{ variables.EnvName }}
+      DatastageProject: ${{ variables.Datastage_Project }}
+      ProjectCacheDir: $(AgentMettleHome)\cache\$(IISEngineName)\${{ variables.Datastage_Project }}
+      IISUsername: $(IISUsername)
+      IISPassword: $(IISPassword)
+      MCIUsername: $(MCIUsername)
+      MCIPassword: $(MCIPassword)
+      PublishCompilationTests: true
+      mettlecicmd: $(AgentMettleCmd)
+      ProjectTemplate: $(IISProjectTemplateDir)
+      MettleHomeDir: $(AgentMettleHome)
+      UpdateDSParams: false
+      PSSpecialHandling: ${{ variables.PS_SpecialHandling }}
+      AlternateJavaPath: $(AgentMettleAltJavaPath)
+
+#------------------------------------------------------------------------------
+# Copy the unit test spec manually, because we must be able to run unit tests through DSDesigner.
+#------------------------------------------------------------------------------
+  - job:
+    displayName: 'Upload Unit Test Specs'
+    steps:
+    - checkout: self
+      persistCredentials: true
+    - script: |
+        echo "##vso[task.setvariable variable=PATH]$(AgentMettleAltJavaPath);$(PATH)"
+      displayName: "Set java version"
+      condition: ne('$(AgentMettleAltJavaPath)', '')
+    - script:
+        $(AgentMettleCmd) properties config ^
+          -baseDir datastage ^
+          -filePattern "cleanup_unittest.sh" ^
+          -properties varfiles/var.${{ variables.EnvID }} ^
+          -outDir config
+      displayName: 'Configure Properties'
+    - script:
+        $(AgentMettleCmd) remote execute ^
+          -host $(IISEngineName) ^
+          -username $(MCIUsername) -password $(MCIPassword) ^
+          -script "config/cleanup_unittest.sh"
+      displayName: 'Cleanup'
+    - script:
+        $(AgentMettleCmd) remote upload ^
+          -host $(IISEngineName) ^
+          -username $(MCIUsername) -password $(MCIPassword) ^
+          -source unittest ^
+          -transferPattern "**/*" ^
+          -destination $(EngineUnitTestBaseDir)/specs/${{ variables.Datastage_Project }}
+      displayName: 'Upload unit test specs'
+
+
+
+#  - job:
+#    displayName: 'Tag deployment'
+#    dependsOn: 
+#    - Deploy_${{ variables.EnvID }}
+#    steps:
+#    - checkout: self
+#      persistCredentials: true
+#    - script: |
+#        echo ##vso[build.addbuildtag]${{ variables.EnvID }}
+#      displayName: 'Tag build $(Build.BuildNumber)'
+#    - script: |
+#        echo Git user.name $(Build.RequestedFor)
+#        echo Git user.email $(Build.RequestedForEmail)
+#        echo Tag ${{ variables.BranchName }}
+#        git config --global --replace-all user.name "$(Build.RequestedFor)"
+#        git config --global --replace-all user.email "$(Build.RequestedForEmail)"
+#        git tag -a ${{ variables.BranchName }} -m "MettleCI deployment to ${{ variables.EnvName }}"
+#        git push origin ${{ variables.BranchName }}
+#      workingDirectory: $(Build.SourcesDirectory)
+#      displayName: 'Tag Git commit'
+
+  # Update MettleCI Workbench to associate the _HF Hotfix project with this new Hotfix branch 
+  - job:
+    displayName: 'Update Workbench Config'
+    dependsOn: 
+    - Deploy_${{ variables.EnvID }}
+    steps:
+    - script: |
+        echo "##vso[task.setvariable variable=PATH]$(AgentMettleAltJavaPath);$(PATH)"
+      displayName: "Set java version"
+      condition: ne('$(AgentMettleAltJavaPath)', '')
+    - script: |
+        $(AgentMettleCmd) workbench set-branch ^
+        -url $(MCIWorkbenchURL) ^
+        -username $(IISUsername) -password $(IISPassword) ^
+        -project ${{ variables.Datastage_Project }} ^
+        -branch ${{ variables.BranchName }}
+      displayName: 'Configure Workbench for ${{ variables.BranchName }}'

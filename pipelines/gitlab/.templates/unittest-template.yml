@@ -1,0 +1,41 @@
+.mci_unittest:
+  script:
+    - >
+      & $AgentMettleCmd properties config 
+      -baseDir $CI_PROJECT_DIR/datastage 
+      -filePattern "cleanup_unittest.sh" 
+      -properties varfiles/var.$ENVID 
+      -outDir $CI_PROJECT_DIR/config
+    - >
+      & $AgentMettleCmd remote execute 
+      -host $IISEngineName 
+      -username $MCIUsername -password $MCIPassword 
+      -script "$CI_PROJECT_DIR/config/cleanup_unittest.sh"
+    - >
+      & $AgentMettleCmd remote upload 
+      -host $IISEngineName 
+      -username $MCIUsername -password $MCIPassword
+      -source "$CI_PROJECT_DIR/unittest" 
+      -transferPattern "**/*" ^
+      -destination $ENGINEUNITTESTBASEDIR/specs/$DATASTAGE_PROJECT
+    - >
+      if (!(Test-Path -PathType container $CI_PROJECT_DIR\unittest-reports)) {
+        New-Item -ItemType Directory -Path $CI_PROJECT_DIR\unittest-reports
+      }
+    - >
+      & $AgentMettleCmd unittest test 
+      -domain $IISDomainName 
+      -server $IISEngineName 
+      -username $IISUsername -password $IISPassword 
+      -project $DATASTAGE_PROJECT 
+      -specs $CI_PROJECT_DIR/unittest 
+      -reports $CI_PROJECT_DIR/unittest-reports/$DATASTAGE_PROJECT 
+      -project-cache $AgentMettleHome/cache/$IISEngineName/$DATASTAGE_PROJECT 
+      -test-suite "MettleCI Unit Tests - $CI_ENVIRONMENT_NAME"
+    - >
+      & $AgentMettleCmd remote download 
+      -host $IISEngineName 
+      -source $ENGINEUNITTESTBASEDIR/reports 
+      -destination $CI_PROJECT_DIR/unittest-reports 
+      -transferPattern "$DATASTAGE_PROJECT/**/*.xml" 
+      -username $MCIUsername -password $MCIPassword

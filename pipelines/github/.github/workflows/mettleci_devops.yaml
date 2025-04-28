@@ -1,0 +1,458 @@
+# ███╗   ███╗███████╗████████╗████████╗██╗     ███████╗ ██████╗██╗
+# ████╗ ████║██╔════╝╚══██╔══╝╚══██╔══╝██║     ██╔════╝██╔════╝██║
+# ██╔████╔██║█████╗     ██║      ██║   ██║     █████╗  ██║     ██║
+# ██║╚██╔╝██║██╔══╝     ██║      ██║   ██║     ██╔══╝  ██║     ██║
+# ██║ ╚═╝ ██║███████╗   ██║      ██║   ███████╗███████╗╚██████╗██║
+# ╚═╝     ╚═╝╚══════╝   ╚═╝      ╚═╝   ╚══════╝╚══════╝ ╚═════╝╚═╝
+# MettleCI DevOps for DataStage       (C) 2021-2025 Data Migrators
+
+# In summary, this workflow performs the following tasks:
+# 1. Checks out the project repository.
+# 2. Sets the Java path if an alternate path is provided.
+# 3. Configures properties for the compliance test execution.
+# 4. Cleans up any previous compliance test artifacts.
+# 5. Runs the compliance tests using the MettleCI CLI.
+# 6. Checks for the existence of test results and publishes them if available.
+
+name: 'MettleCI DevOps Workflow'
+
+# Notable Variables and Secrets required by the workflow are:
+# - MCI_USERNAME: The name of the OS user on the DataStage engine tier configured with
+#                 permission to copy files and run unit tests.
+# - MCI_PASSWORD: The password for the MCI_USERNAME user. (Secret) 
+# - IIS_USERNAME: The name of the DataStage user.
+# - IIS_PASSWORD: The password for the IIS_USERNAME user. (Secret) 
+# - COMPLIANCE_ACCESS: The Personal Access Token (PAT) for accessing the compliance repository.
+
+# Trigger this pipeline on a commit to the main branch
+# Refine these conditions to suit your needs
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+# Specify GitHub Token permissions
+permissions:
+  contents: read
+  checks: write
+
+# This allows a subsequently queued workflow run to interrupt previous runs
+# Useful if you forget to commit a dependent asset - just commit the new asset and
+# any pipelines in-progress will be stopped and a new pipeline initiated.
+concurrency:
+  group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
+  cancel-in-progress: true
+
+# Where the (Windows based) runner should execute commands
+defaults:
+  run:
+    shell: cmd
+
+# NOTE
+# Many jobs publish values (via %GITHUB_OUTPUT%) that are used by other jobs. e.g 
+# SomeVariable=SomeValue>> %GITHUB_OUTPUT%
+# It's important that you DO NOT add a space between the variable value (SomeValue, in this case)
+# and the '>>' operator, as this would append the space character to the variable value. 
+
+jobs:
+
+  # Echo basic environment variables for diagnostic purposes.
+  # This can be removed for production applications.  
+  EnvSetupBase:
+    name: Publish Base Environment Vars for Workflow
+    runs-on: [self-hosted, Windows, <RUNNER_POOL_NAME>, MettleCI, DataStage11.7]
+    outputs:
+      var_BaseIISProjectName: ${{ steps.set-BaseIISProjectName.outputs.BaseIISProjectName }}
+      var_ComplianceRepo: ${{ steps.set-ComplianceRepo.outputs.ComplianceRepo }}
+      var_ComplianceFatalTags: ${{ steps.set-ComplianceFatalTags.outputs.ComplianceFatalTags }}
+      var_PSSpecialHandling: ${{ steps.set-PSSpecialHandling.outputs.PSSpecialHandling }}
+    steps:
+
+      # Replace <BASE_PROJECT_NAME> with the name of DataStage project
+      - name: BaseIISProjectName
+        id: set-BaseIISProjectName
+        run: echo BaseIISProjectName=<BASE_PROJECT_NAME>>> %GITHUB_OUTPUT%
+
+      # Replace COMPLIANCE_REPO_PATH with the path to the Compliance Rule repository.
+      # Specify it in the format Project/Repository e.g.: DataMigrators/Compliance
+      - name: ComplianceRepo
+        id: set-ComplianceRepo
+        run: echo ComplianceRepo=<COMPLAINCE_REPO_PATH>>> %GITHUB_OUTPUT%
+
+      # Replace COMPLIANCE_FATAL_TAGS with the tag(s) that which, when attached to
+      # any failing Compliance Rule, will cause your GitHub pipeline to abort.
+      # e.g. fail-ci
+      - name: ComplianceFatalTags
+        id: set-ComplianceFatalTags
+        run: echo ComplianceFatalTags=fail-ci>> %GITHUB_OUTPUT%
+
+      # Enter either true or false to enable special handling of parameter sets
+      - name: PSSpecialHandling
+        id: set-PSSpecialHandling
+        run: echo PSSpecialHandling=true>> %GITHUB_OUTPUT%
+
+  # Use a version of the JVM different to that of your GitHub runner (optional)
+  EnvSetupAternateJavaVersion:
+    name: Publish Alternate Java Version for MettleCI CLI
+    runs-on: [self-hosted, Windows, <RUNNER_POOL_NAME>, MettleCI, DataStage11.7]
+    outputs:
+      var_Path: ${{ steps.set-Path.outputs.Path }}
+    steps:
+      - name: Path
+        id: set-Path
+        run: echo Path=<PATH_TO_JDK8_BIN_DIR>>> %GITHUB_OUTPUT%
+
+  # Details of the GitHub runner that executes commands against a DataStage instance
+  # The MCIPASSWORD is configured as a Secret against the Environment in Github
+  EnvSetupAgent:
+    name: Publish Target Agent Env Vars
+    runs-on: [self-hosted, Windows, <RUNNER_POOL_NAME>, MettleCI, DataStage11.7]
+    outputs:
+      var_AgentMettleCmd: ${{ steps.set-AgentMettleCmd.outputs.AgentMettleCmd }}
+      var_AgentMettleHome: ${{ steps.set-AgentMettleHome.outputs.AgentMettleHome }}
+      var_MCIUsername: ${{ steps.set-MCIUsername.outputs.MCIUsername }}
+    steps:
+
+      # Replace AGENT_METTLE_CMD with the fully qualified path to the MettleCI cli script.
+      # e.g. <AGENT_METTLE_CMD>
+      # Note the requirement to use double backslashes for filesystem references
+      - name: AgentMettleCmd
+        id: set-AgentMettleCmd
+        run: echo AgentMettleCmd=<AGENT_METTLE_CMD>>> %GITHUB_OUTPUT%
+
+      # Replace AGENT_METTLE_HOME with the dome directory of the MettleCI CLI
+      # e.g. <AGENT_METTLE_HOME>
+      # Note the requirement to use double backslashes for filesystem references
+      - name: AgentMettleHome
+        id: set-AgentMettleHome
+        run: echo AgentMettleHome=<AGENT_METTLE_HOME>>> %GITHUB_OUTPUT%
+
+      # Replace MCI_USERNAME with the name of the OS user on the DatStage engine tier
+      # configured with permission to copy files and run unit tests.
+      # e.g. <MCI_USERNAME>
+      - name: MCIUsername
+        id: set-MCIUsername
+        run: echo MCIUsername=<MCI_USERNAME>>> %GITHUB_OUTPUT%
+
+# Details of the DataStage instance
+# If more than one instance exists, this job must be repeated for each installation,
+# each with its own distinctive job name.
+# In this situation, each job that interacts with a specific Environment in Gitlab
+# must specify the correct job name under the [needs] clause. 
+# Deployment environments are denoted in MettleCI by EnvID and correspond with the Gitlab Environment
+# eg: 'ci' in MettleCI  <--> the Environment 'DevOps - Continuous Integration' configured in Gitlab
+# IISPASSWORD is configured as a Secret against the Gitlab Environment
+#
+# In this example, we define two DataStage instances:
+#   - NonProd: for use with the "Continuous Integration", "Quality Assurance" and "Performance" environments
+#   - Prod: for use with the "Production" environment
+  EnvSetupNonProdEngine:
+    name: Publish Non-prod DataStage Env Vars
+    runs-on: [self-hosted, Windows, <RUNNER_POOL_NAME>, MettleCI, DataStage11.7]
+    outputs:
+      var_IISDomainName: ${{ steps.set-IISDomainName.outputs.IISDomainName }}
+      var_IISEngineName: ${{ steps.set-IISEngineName.outputs.IISEngineName }}
+      var_IISUsername: ${{ steps.set-IISUsername.outputs.IISUsername }}
+      var_IISProjectTemplateDir: ${{ steps.set-IISProjectTemplateDir.outputs.IISProjectTemplateDir }}
+      var_UnitTestPath: ${{ steps.set-UnitTestPath.outputs.UnitTestPath }}
+    steps:
+
+      # Replace IIS_DOMAIN_NAME with the name of the DataStage services tier (including the port number),
+      # as it appears in the DataStage Designer client login
+      # e.g. datastage-services.myteam.myorg.com:59445
+      - name: IISDomainName
+        id: set-IISDomainName
+        run: echo IISDomainName=<IIS_DOMAIN_NAME>>> %GITHUB_OUTPUT%
+
+      # Replace IIS_ENGINE_NAME with the name of the DataStage engine tier,
+      # as it appears in the DataStage Designer client login
+      # e.g. datastage-engine.myteam.myorg.com
+      - name: IISEngineName
+        id: set-IISEngineName
+        run: echo IISEngineName=<IIS_ENGINE_NAME>>> %GITHUB_OUTPUT%
+
+      # Replace IIS_USERNAME with the name of DataStage user
+      # e.g. <IIS_USERNAME>
+      - name: IISUsername
+        id: set-IISUsername
+        run: echo IISUsername=<IIS_USERNAME>>> %GITHUB_OUTPUT%
+
+      # Replace IIS_PROJECT_TEMPLATE_PATH is the path to the DataStage project template directory
+      # on the DataStage engine tier, e.g. <IIS_PROJECT_TEMPLATE_PATH>
+      - name: IISProjectTemplateDir
+        id: set-IISProjectTemplateDir
+        run: echo IISProjectTemplateDir=<IIS_PROJECT_TEMPLATE_PATH>>> %GITHUB_OUTPUT%
+
+      # Replace MCI_IIS_UNIT_TEST_BASE_PATH with the path to the MettleCI unit test base directory
+      # on the DataStage engine tier, e.g. <MCI_IIS_UNIT_TEST_BASE_PATH>
+      - name: UnitTestPath
+        id: set-UnitTestPath
+        run: echo UnitTestPath=<MCI_IIS_UNIT_TEST_BASE_PATH>>> %GITHUB_OUTPUT%
+
+
+  # The same process for the production DataStage instance, assuming it's different to the 
+  # non-production instance
+  EnvSetupProdEngine:
+    name: Publish Prod DataStage Env Vars
+    runs-on: [self-hosted, Windows, <RUNNER_POOL_NAME>, MettleCI, DataStage11.7]
+    outputs:
+      var_IISDomainName: ${{ steps.set-IISDomainName.outputs.IISDomainName }}
+      var_IISEngineName: ${{ steps.set-IISEngineName.outputs.IISEngineName }}
+      var_IISUsername: ${{ steps.set-IISUsername.outputs.IISUsername }}
+      var_IISProjectTemplateDir: ${{ steps.set-IISProjectTemplateDir.outputs.IISProjectTemplateDir }}
+      var_UnitTestPath: ${{ steps.set-UnitTestPath.outputs.UnitTestPath }}
+    steps:
+      - name: IISDomainName
+        id: set-IISDomainName
+        run: echo IISDomainName=<IIS_DOMAIN_NAME>>> %GITHUB_OUTPUT%
+
+      - name: IISEngineName
+        id: set-IISEngineName
+        run: echo IISEngineName=<IIS_ENGINE_NAME>>> %GITHUB_OUTPUT%
+
+      - name: IISUsername
+        id: set-IISUsername
+        run: echo IISUsername=<IIS_USERNAME>>> %GITHUB_OUTPUT%
+      
+      - name: IISProjectTemplateDir
+        id: set-IISProjectTemplateDir
+        run: echo IISProjectTemplateDir=<IIS_PROJECT_TEMPLATE_PATH>>> %GITHUB_OUTPUT%
+      
+      - name: UnitTestPath
+        id: set-UnitTestPath
+        run: echo UnitTestPath=<MCI_IIS_UNIT_TEST_BASE_PATH>>> %GITHUB_OUTPUT%
+
+  # An example of a job that dumps diagnostic information to the console and
+  # also sets up an alternative Java environment for the Job to run in.
+  Diagnostics:
+    name: Diagnostics Job
+    runs-on: [self-hosted, Windows, <RUNNER_POOL_NAME>, MettleCI, DataStage11.7]
+    environment: Continuous Integration
+    needs: [EnvSetupBase, EnvSetupAgent, EnvSetupNonProdEngine, EnvSetupAternateJavaVersion]
+    env:
+      EnvID: ci
+      # Set the name of the DataStage target project for this environment
+      DatastageProject: ${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_ci
+    steps:
+      # Set the Java environment for the job
+      # This is optional and can be removed if not required 
+      - name: Set Alternate Java for Job
+        if: ${{ needs.EnvSetupAternateJavaVersion.outputs.var_Path != '' }}
+        run: |
+          echo PATH=${{ needs.EnvSetupAternateJavaVersion.outputs.var_Path }};%PATH%>> %GITHUB_ENV%
+
+      # Test the Java environment
+      - name: Verify Java
+        run: |
+          java -version
+
+      # Dump the environment variables to the console
+      - name: Print environment variables
+        run: |
+          echo "IISUsername: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISUsername }}" ^
+          echo "IISPassword: ${{ secrets.IISPASSWORD }}" ^
+          echo "IISDomainName: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISDomainName }}" ^
+          echo "IISEngineName: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISEngineName }}" ^
+          echo "EnvID: ${{ env.EnvID }}" ^
+          echo "BaseIISProjectName: ${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}" ^
+          echo "DatastageProject: ${{ env.DatastageProject }}" ^
+          echo "ProjectCacheDir: ${{ needs.EnvSetupAgent.outputs.var_AgentMettleHome }}\cache\${{ needs.EnvSetupNonProdEngine.outputs.var_IISEngineName }}\${{ env.DatastageProject }}" ^
+          echo "MCIUsername: ${{ needs.EnvSetupAgent.outputs.var_MCIUsername }}" ^
+          echo "MCIPassword: ${{ secrets.MCIPASSWORD }}" ^
+          echo "AgentMettleCmd: ${{ needs.EnvSetupAgent.outputs.var_AgentMettleCmd }}" ^
+          echo "ADOProject: ${{ env.System.TeamProject }}" ^
+          echo "SourceRepo: ${{ env.Build.Repository.Name }}" ^
+          echo "Agent.Name: ${{ runner.name }}"
+
+          set
+
+  # Identify any differences between the Git repository and the destination environment (CI, in this case) and
+  # re-deploy assets to that environment to guarantee its alignment with the Git repository        
+  Deploy_CI:
+    name: Deploy - CI
+    # The 'with' statement that supplies arguments can only take elements from:
+    # - the GitHub context, and 
+    # - the 'needs' object
+    # For this reason you must include in your 'needs' the job where you set the
+    # values and return the outputs.
+    needs: [EnvSetupBase, EnvSetupAgent, EnvSetupNonProdEngine, EnvSetupAternateJavaVersion]
+    # The 'uses' statement that calls the reusable 'template' pipeline is not currently capable
+    # of evaluating expressions - a GitHub limitation :-(
+    # This means the repository name, branch, etc. must be hardcoded
+    uses: DataMigrators/<DEVOPS_REPO_PATH>/.github/workflows/deploy-template.yaml@main
+    # The 'with' statement that supplies arguments also cannot yet parse expressions. :-(
+    with:
+      # The 'RunOn' value must match the runner that is executing the job
+      # The runner for this Job must be configured with the MettleCI CLI and the DataStage client   
+      RunOn: '["self-hosted", "Windows", "<RUNNER_POOL_NAME>", "MettleCI", "DataStage11.7"]'
+      EnvironmentName: "Continuous Integration"
+      EnvID: ci
+      AgentMettleCmd: ${{ needs.EnvSetupAgent.outputs.var_AgentMettleCmd }}
+      DatastageProject: "${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_ci"
+      IISDomainName: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISDomainName }}
+      IISEngineName: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISEngineName }}
+      IISUsername: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISUsername }}
+      ProjectCacheDir: "${{ needs.EnvSetupAgent.outputs.var_AgentMettleHome }}/cache/${{ needs.EnvSetupNonProdEngine.outputs.var_IISEngineName }}/${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_ci"
+      UpdateDSParams: false
+      ProjectTemplate: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISProjectTemplateDir }}
+      MCIUsername: ${{ needs.EnvSetupAgent.outputs.var_MCIUsername }}
+      PublishCompilationTests: true
+      PSSpecialHandling: ${{ needs.EnvSetupBase.outputs.var_PSSpecialHandling == 'true' }}
+      AlternateJavaPath: ${{ needs.EnvSetupAternateJavaVersion.outputs.var_Path }}
+    secrets: inherit
+    concurrency: Continuous Integration
+
+  # Run only the CRITICAL Compliance rules against the CI environment
+  # Any failures will return a non-zero exit code and cause the pipeline to fail
+  # The results of the compliance tests are published to the GitHub Actions UI
+  Compliance_Test_CI-Errors:
+    name: Compliance - CI - Errors
+    needs: [EnvSetupBase, EnvSetupAgent, EnvSetupNonProdEngine, EnvSetupAternateJavaVersion, Deploy_CI]
+    uses: DataMigrators/<DEVOPS_REPO_PATH>/.github/workflows/compliance-template.yaml@main
+    with:
+      # The runner for this Job must be configured with the MettleCI CLI and the DataStage client   
+      RunOn: '["self-hosted", "Windows", "<RUNNER_POOL_NAME>", "MettleCI", "DataStage11.7"]'
+      EnvironmentName: "Continuous Integration"
+      ComplianceRepoName: ${{ needs.EnvSetupBase.outputs.var_ComplianceRepo }}
+      # Run ONLY compliance rules that are tagged with the fatal tag 
+      IncludeTags: ${{ needs.EnvSetupBase.outputs.var_ComplianceFatalTags }}
+      ExcludeTags: ''
+      ComplianceSuite: Errors
+      AgentMettleCmd: ${{ needs.EnvSetupAgent.outputs.var_AgentMettleCmd }}
+      DatastageProject: "${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_ci"
+      ProjectCacheDir: "${{ needs.EnvSetupAgent.outputs.var_AgentMettleHome }}/cache/${{ needs.EnvSetupNonProdEngine.outputs.var_IISEnginename }}/${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_ci"
+      ContinueOnError: false
+      AlternateJavaPath: ${{ needs.EnvSetupAternateJavaVersion.outputs.var_Path }}
+    secrets:
+      PAT: ${{ secrets.COMPLIANCE_ACCESS }}
+    concurrency: Continuous Integration - Compliance Errors
+
+  # Run only the NON-CRITICAL Compliance rules against the CI environment
+  # Any failures will return a zero exit code and the pipeline will continue to execute  
+  # The results of the compliance tests will still be published to the GitHub Actions UI. 
+  Compliance_Test_CI-Warnings:
+    name: Compliance - CI - Warnings
+    needs: [EnvSetupBase, EnvSetupAgent, EnvSetupNonProdEngine, EnvSetupAternateJavaVersion, Deploy_CI]
+    uses: DataMigrators/<DEVOPS_REPO_PATH>/.github/workflows/compliance-template.yaml@main
+    with:
+      # The runner for this Job must be configured with the MettleCI CLI and the DataStage client   
+      RunOn: '["self-hosted", "Windows", "<RUNNER_POOL_NAME>", "MettleCI", "DataStage11.7"]'
+      EnvironmentName: "Continuous Integration"
+      ComplianceRepoName: ${{ needs.EnvSetupBase.outputs.var_ComplianceRepo }}
+      # Run all compliance rules EXCEPT those that are tagged with the fatal tag 
+      IncludeTags: ''
+      ExcludeTags: ${{ needs.EnvSetupBase.outputs.var_ComplianceFatalTags }}
+      ComplianceSuite: Warnings
+      AgentMettleCmd: ${{ needs.EnvSetupAgent.outputs.var_AgentMettleCmd }}
+      DatastageProject: "${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_ci"
+      ProjectCacheDir: "${{ needs.EnvSetupAgent.outputs.var_AgentMettleHome }}/cache/${{ needs.EnvSetupNonProdEngine.outputs.var_IISEnginename }}/${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_ci"
+      ContinueOnError: true
+      AlternateJavaPath: ${{ needs.EnvSetupAternateJavaVersion.outputs.var_Path }}
+    secrets:
+      PAT: ${{ secrets.COMPLIANCE_ACCESS }}
+    concurrency: Continuous Integration - Compliance Warnings
+
+  # Run your DataStage Jobs' unit tests against the CI environment
+  # Any failures will return a zero exit code and the pipeline will continue to execute  
+  # The results of the compliance tests will still be published to the GitHub Actions UI. 
+  Unittest_CI:
+    name: Unit Test - CI
+    needs: [EnvSetupBase, EnvSetupAgent, EnvSetupNonProdEngine, EnvSetupAternateJavaVersion, Deploy_CI]
+    uses: DataMigrators/<DEVOPS_REPO_PATH>/.github/workflows/unittest-template.yaml@main
+    with:
+      # The runner for this Job must be configured with the MettleCI CLI and the DataStage client   
+      RunOn: '["self-hosted", "Windows", "<RUNNER_POOL_NAME>", "MettleCI", "DataStage11.7"]'
+      EnvironmentName: "Continuous Integration"
+      EnvID: ci
+      AgentMettleCmd: ${{ needs.EnvSetupAgent.outputs.var_AgentMettleCmd }}
+      DatastageProject: "${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_ci"
+      IISDomainName: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISDomainName }}
+      IISEngineName: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISEngineName }}
+      IISUsername: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISUsername }}
+      ProjectCacheDir: "${{ needs.EnvSetupAgent.outputs.var_AgentMettleHome }}/cache/${{ needs.EnvSetupNonProdEngine.outputs.var_IISEngineName }}/${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_ci"
+      MCIUsername: ${{ needs.EnvSetupAgent.outputs.var_MCIUsername }}
+      UnitTestPath: ${{ needs.EnvSetupNonProdEngine.outputs.var_UnitTestPath }}
+      AlternateJavaPath: ${{ needs.EnvSetupAternateJavaVersion.outputs.var_Path }}
+    secrets: inherit
+    concurrency: Continuous Integration
+
+  # Identify any differences between the Git repository and the destination environment (QA, in this case) and
+  # re-deploy assets to that environment to guarantee its alignment with the Git repository
+  Deploy_QA:
+    name: Deploy - QA
+    needs: [EnvSetupBase, EnvSetupAgent, EnvSetupNonProdEngine, EnvSetupAternateJavaVersion, Compliance_Test_CI-Errors, Compliance_Test_CI-Warnings, Unittest_CI]
+    uses: DataMigrators/<DEVOPS_REPO_PATH>/.github/workflows/deploy-template.yaml@main
+    with:
+      RunOn: '["self-hosted", "Windows", "<RUNNER_POOL_NAME>", "MettleCI", "DataStage11.7"]'
+      EnvironmentName: "Quality Assurance"
+      EnvID: qa
+      AgentMettleCmd: ${{ needs.EnvSetupAgent.outputs.var_AgentMettleCmd }}
+      DatastageProject: "${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_qa"
+      IISDomainName: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISDomainName }}
+      IISEngineName: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISEngineName }}
+      IISUsername: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISUsername }}
+      ProjectCacheDir: "${{ needs.EnvSetupAgent.outputs.var_AgentMettleHome }}/cache/${{ needs.EnvSetupNonProdEngine.outputs.var_IISEngineName }}/${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_qa"
+      UpdateDSParams: false
+      ProjectTemplate: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISProjectTemplateDir }}
+      MCIUsername: ${{ needs.EnvSetupAgent.outputs.var_MCIUsername }}
+      PublishCompilationTests: true
+      PSSpecialHandling: ${{ needs.EnvSetupBase.outputs.var_PSSpecialHandling == 'true' }}
+      AlternateJavaPath: ${{ needs.EnvSetupAternateJavaVersion.outputs.var_Path }}
+    secrets: inherit
+    concurrency: Quality Assurance
+
+  # Identify any differences between the Git repository and the destination environment (Performance,
+  # in this case) and re-deploy assets to that environment to guarantee its alignment with the Git repository
+  Deploy_Perf:
+    name: Deploy - Perf
+    needs: [EnvSetupBase, EnvSetupAgent, EnvSetupNonProdEngine, EnvSetupAternateJavaVersion, Deploy_QA]
+    uses: DataMigrators/<DEVOPS_REPO_PATH>/.github/workflows/deploy-template.yaml@main
+    with:
+      RunOn: '["self-hosted", "Windows", "<RUNNER_POOL_NAME>", "MettleCI", "DataStage11.7"]'
+      EnvironmentName: "Performance"
+      EnvID: perf
+      AgentMettleCmd: ${{ needs.EnvSetupAgent.outputs.var_AgentMettleCmd }}
+      DatastageProject: "${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_perf"
+      IISDomainName: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISDomainName }}
+      IISEngineName: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISEngineName }}
+      IISUsername: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISUsername }}
+      ProjectCacheDir: "${{ needs.EnvSetupAgent.outputs.var_AgentMettleHome }}/cache/${{ needs.EnvSetupNonProdEngine.outputs.var_IISEngineName }}/${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_perf"
+      UpdateDSParams: false
+      ProjectTemplate: ${{ needs.EnvSetupNonProdEngine.outputs.var_IISProjectTemplateDir }}
+      MCIUsername: ${{ needs.EnvSetupAgent.outputs.var_MCIUsername }}
+      PublishCompilationTests: true
+      PSSpecialHandling: ${{ needs.EnvSetupBase.outputs.var_PSSpecialHandling == 'true' }}
+      AlternateJavaPath: ${{ needs.EnvSetupAternateJavaVersion.outputs.var_Path }}
+    secrets: inherit
+    concurrency: Performance
+
+  # Identify any differences between the Git repository and the destination environment (Production,
+  # in this case) and re-deploy assets to that environment to guarantee its alignment with the Git repository.  
+  Deploy_Prod:
+    name: Deploy - Prod
+    # The “with” statement that supplies arguments can only take elements from the github context and the “needs”
+    # object, so you MUST have a line that “needs” the job where you set the values and return the outputs.
+    needs: [EnvSetupBase, EnvSetupAgent, EnvSetupProdEngine, EnvSetupAternateJavaVersion, Deploy_Perf]
+    # The “uses” statement that calls the reusable workflow can’t evaluate expressions yet.
+    # That means the repo name, branch, etc. must be hardcoded.
+    uses: DataMigrators/<DEVOPS_REPO_PATH>/.github/workflows/deploy-template.yaml@main
+    # The “with” statement that supplies arguments cannot yet parse expressions. :-(
+    with:
+      RunOn: '["self-hosted", "Windows", "<RUNNER_POOL_NAME>", "MettleCI", "DataStage11.7"]'
+      EnvironmentName: "Production"
+      EnvID: prod
+      AgentMettleCmd: ${{ needs.EnvSetupAgent.outputs.var_AgentMettleCmd }}
+      DatastageProject: "${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_prod"
+      IISDomainName: ${{ needs.EnvSetupProdEngine.outputs.var_IISDomainName }}
+      IISEngineName: ${{ needs.EnvSetupProdEngine.outputs.var_IISEngineName }}
+      IISUsername: ${{ needs.EnvSetupProdEngine.outputs.var_IISUsername }}
+      ProjectCacheDir: "${{ needs.EnvSetupAgent.outputs.var_AgentMettleHome }}/cache/${{ needs.EnvSetupProdEngine.outputs.var_IISEngineName }}/${{ needs.EnvSetupBase.outputs.var_BaseIISProjectName }}_prod"
+      UpdateDSParams: false
+      ProjectTemplate: ${{ needs.EnvSetupProdEngine.outputs.var_IISProjectTemplateDir }}
+      MCIUsername: ${{ needs.EnvSetupAgent.outputs.var_MCIUsername }}
+      PSSpecialHandling: ${{ needs.EnvSetupBase.outputs.var_PSSpecialHandling == 'true' }}
+      PublishCompilationTests: true
+      AlternateJavaPath: ${{ needs.EnvSetupAternateJavaVersion.outputs.var_Path }}
+    secrets: inherit
+    concurrency: Production

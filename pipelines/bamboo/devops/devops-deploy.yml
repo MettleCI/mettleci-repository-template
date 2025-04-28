@@ -1,0 +1,56 @@
+---
+version: 2
+#==================
+# Plan for deployment of assets to downstream environments QA, PERF and PROD.
+#==================
+deployment:
+  name: Deployment for MyProject
+  source-plan: MYPROJ-CI
+release-naming:
+  next-version-name: release-1
+  applies-to-branches: false
+  auto-increment: true
+  auto-increment-variables: [] 
+environments:
+- QA
+- PERF
+- PROD
+
+QA:
+  description: Quality Assurance
+  triggers: &id001 []
+  variables:                                                             # Plan specific variables, overriding global and project variables
+    DomainName: servics.mycorp.com:59445
+    EnvironmentID: QA
+    ServerName: engine.mycorp.com
+    ServerUsername: mciworkb
+    DatastageCredentials: &datastage_credentials DataStageCredentials    # Datastage shared credential variable substitution
+    SshCredentials: &ssh_credentials SSHKeyName                          # SSH shared credential variable substitution
+  tasks:
+    !include .\templates\deploy-template.yml
+ 
+PERF:
+  description: Performance
+  triggers: &id001 []
+  variables:
+    DomainName: servics.mycorp.com:59445
+    EnvironmentID: PERF
+    ServerName: engine.mycorp.com
+    ServerUsername: mciworkb
+    DatastageCredentials: &datastage_credentials DataStageCredentials    # Datastage shared credential variable substitution
+    SshCredentials: &ssh_credentials SSHKeyName                          # SSH shared credential variable substitution
+  tasks:
+    !include .\templates\deploy-template.yml
+
+PROD:
+  description: Production
+  triggers: &id001 []
+  variables:
+    DomainName: servics.mycorp.com:59445
+    EnvironmentID: PROD
+    ServerName: engine.mycorp.com
+    ServerUsername: mciworkb
+    DatastageCredentials: &datastage_credentials DataStageCredentials    # Datastage shared credential variable substitution
+    SshCredentials: &ssh_credentials SSHKeyName                          # SSH shared credential variable substitution
+  tasks:
+    !include .\templates\deploy-template.yml

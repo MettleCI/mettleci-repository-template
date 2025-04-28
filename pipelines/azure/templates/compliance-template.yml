@@ -1,0 +1,75 @@
+# MettleCI pipeline template providing a pipeline stage which performs a compliance check of 
+# specified asssets against a specified set of Compliance rules is a specified repository.
+
+parameters:
+- name: ProjectName
+  default: ''
+- name: ComplianceSuite
+  default: ''
+- name: ComplianceRepoName
+  default: ''
+- name: SourceRepoName
+  default: ''
+- name: IncludeTags
+  default: ''
+- name: ExcludeTags
+  default: ''
+- name: ProjectCacheDir
+  default: ''
+- name: mettlecicmd
+  default: ''
+- name: ContinueOnError
+  default: false
+- name: AlternateJavaPath
+  type: string
+  default: ''
+
+jobs:
+- job: Compliance_Test_${{ replace(parameters.ComplianceSuite, ' ', '_') }}
+  variables:
+  - name: includeTagsOption
+    ${{ if eq(parameters.IncludeTags, '') }}:
+      value: ''
+    ${{ else }}:
+      value: '-include-tags ${{parameters.IncludeTags}}'
+  - name: excludeTagsOption
+    ${{ if eq(parameters.ExcludeTags, '') }}:
+      value: '-exclude-tags example'
+    ${{ else }}:
+      value: '-exclude-tags example,${{parameters.ExcludeTags}}'
+
+  steps:
+  - checkout: Compliance
+  - checkout: self
+  - script: |
+      echo "##vso[task.setvariable variable=PATH]${{ parameters.AlternateJavaPath }};$(PATH)"
+    displayName: "Set java version"
+    condition: ne('${{ parameters.AlternateJavaPath }}', '')
+  - script:
+      ${{ parameters.mettlecicmd }} compliance test ^
+        -assets $(Agent.BuildDirectory)\s\${{ parameters.SourceRepoName }}\datastage ^
+        -report "compliance-reports/compliance_report_${{ parameters.ComplianceSuite }}.xml" ^
+        -junit ^
+        -rules $(Agent.BuildDirectory)\s\${{ parameters.ComplianceRepoName }} ^
+        ${{ variables.includeTagsOption }} ^
+        ${{ variables.excludeTagsOption }} ^
+        -project-cache ${{ parameters.ProjectCacheDir }} ^
+        -ignore-test-failures ^
+        -include-job-in-test-name ^
+        -test-suite "${{ parameters.ComplianceSuite }}"
+    displayName: 'Run Compliance (${{ parameters.ComplianceSuite }})'
+  - powershell: |
+      $fileExists = Test-Path -Path "compliance-reports/compliance_report_${{ parameters.ComplianceSuite }}.xml"
+      Write-Output "##vso[task.setvariable variable=FileExists]$fileExists"
+    condition: always()
+    displayName: 'Check for results'
+  - task: PublishTestResults@2
+    condition: and(always(), eq(variables.fileExists, 'true'))
+    continueOnError: ${{ parameters.ContinueOnError }}
+    inputs:
+      testRunTitle: 'MettleCI Compliance - ${{ parameters.ComplianceSuite }} rules'
+      testRunner: 'JUnit'
+      testResultsFiles: 'compliance-reports/compliance_report_${{ parameters.ComplianceSuite }}.xml'
+      searchFolder: $(System.DefaultWorkingDirectory)
+      failTaskOnFailedTests: true
+    displayName: 'Publish compliance test ${{ parameters.ComplianceSuite }} results'

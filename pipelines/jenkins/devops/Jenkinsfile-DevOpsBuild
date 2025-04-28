@@ -1,0 +1,166 @@
+// Jenkins MettleCI DevOps Pipeline - Build Phase
+
+// In Jenkins configuration, under Jenkins -> Manage Jenkins -> Configure System -> Global Pipeline Libraries,
+// add a refeerence to the Jenkins MCI Shared Libraries, giving it the name "jenkins-mci-shared-libraries"
+// Doing that allows this line to reference that shared library and use the MettleCI step types
+
+@Library('jenkins-templates') _
+
+pipeline {
+  	agent none
+
+    tools {
+        jdk 'jdk-8'
+    }
+
+    environment {
+        IIS_BASE_PROJECT_NAME = '<BASE_PROJECT_NAME>'
+
+        COMPLIANCE_REPO_CREDENTIALS = '<JENKINS_COMPLIANCE_CREDENTIAL_ID>'
+        COMPLIANCE_REPO_URL = '<COMPLIANCE_REPO_URL>'
+        COMPLIANCE_REPO_BRANCH = '<COMPLIANCE_REPO_BRANCH>'
+
+        PS_SPECIALHANDLING = true
+
+        TAG_EMAIL = '<EMAIL>'
+        TAG_USER = '<USERNAME>'
+
+        COMPLIANCE_FATAL_TAG = 'fail-ci'
+
+        USE_SSH_KEY = true
+        USE_SSH_PASSPHRASE = false
+    }
+
+    stages {
+        stage("Diagnostics 11.7") {
+            agent {
+                label 'mettleci && datastage11.7'
+            }
+            environment {
+                ENVID = "ci"
+                DATASTAGE_PROJECT = "${env.IIS_BASE_PROJECT_NAME}_${env.ENVID}"
+            }
+
+            steps {
+                withCredentials([
+                    string(credentialsId: "${env.IISPASSWORD}", variable: 'IISPASSWORD'),
+                    string(credentialsId: "${env.MCIPASSWORD}", variable: 'MCIPASSWORD')
+                ]) {
+                    bat label: 'Diags 117', 
+                        script: '''
+                            echo IISUsername: %IISUSERNAME%
+                            echo IISPassword: %IISPASSWORD%
+                            echo IISDomainName: %IISDOMAINNAME%
+                            echo IISEngineName: %IISENGINENAME%
+                            echo EnvID: %ENVID%
+                            echo BaseIISProjectName: %IIS_BASE_PROJECT_NAME%
+                            echo DatastageProject: %DATASTAGE_PROJECT%
+                            echo ProjectCacheDir: %AGENTMETTLEHOME%\\cache\\%IISENGINENAME%\\%DATASTAGE_PROJECT%
+                            echo MCIUsername: %MCIUSERNAME%
+                            echo MCIPassword: %MCIPASSWORD%
+                            echo AgentMettleCmd: %AGENTMETTLEHOME%
+                            echo Agent Name: %NODE_NAME%
+
+                            java -version
+                        '''
+
+                }
+            }
+        }
+
+        stage("Deploy - CI") {
+            agent {
+                label 'mettleci && datastage11.7 && ci'
+            }
+            environment {
+                ENVID = "ci"
+                DATASTAGE_PROJECT = "${env.IIS_BASE_PROJECT_NAME}_${env.ENVID}"
+                UPGRADE_DSPARAMS = false
+            }
+
+            steps {
+                withCredentials([
+                    string(credentialsId: "${env.IISPASSWORD}", variable: 'IISPASSWORD'),
+                    string(credentialsId: "${env.MCIPASSWORD}", variable: 'MCIPASSWORD'),
+                    string(credentialsId: "${env.SSHKEYPATH}", variable: 'SSHKEYPATH'),
+                    string(credentialsId: "${env.SSHKEYPHRASE}", variable: 'SSHKEYPHRASE')
+                ]) {
+                    mci_deploy(
+                        true,
+                        UPGRADE_DSPARAMS,
+                        PS_SPECIALHANDLING,
+                        USE_SSH_KEY,
+                        USE_SSH_PASSPHRASE
+                    )
+                }
+            }
+        }
+
+        stage('Test - CI') {                    
+            agent {
+                label 'mettleci && datastage11.7 && ci'
+            }
+            environment {
+                ENVID = "ci"
+                DATASTAGE_PROJECT = "${env.IIS_BASE_PROJECT_NAME}_${env.ENVID}"
+            }
+
+            steps {
+                withCredentials([
+                    string(credentialsId: "${env.IISPASSWORD}", variable: 'IISPASSWORD'),
+                    string(credentialsId: "${env.MCIPASSWORD}", variable: 'MCIPASSWORD'),
+                    string(credentialsId: "${env.SSHKEYPATH}", variable: 'SSHKEYPATH'),
+                    string(credentialsId: "${env.SSHKEYPHRASE}", variable: 'SSHKEYPHRASE')
+                ]) {
+                    mci_compliance(
+                        env.COMPLIANCE_REPO_CREDENTIALS,
+                        env.COMPLIANCE_REPO_URL,
+                        env.COMPLIANCE_REPO_BRANCH,
+                        "",
+                        env.COMPLIANCE_FATAL_TAG,
+                        "Warnings",
+                        true
+                    )
+
+                    mci_compliance(
+                        env.COMPLIANCE_REPO_CREDENTIALS,
+                        env.COMPLIANCE_REPO_URL,
+                        env.COMPLIANCE_REPO_BRANCH,
+                        env.COMPLIANCE_FATAL_TAG,
+                        "",
+                        "Errors",
+                        false
+                    )
+
+                    mci_unittest(
+                        "CI",
+                        USE_SSH_KEY,
+                        USE_SSH_PASSPHRASE
+                    )
+                }
+            }
+        } 
+
+        stage('Success - Tag Repository') {
+            agent {
+                label 'mettleci && datastage11.7'
+            }
+            steps {
+                withCredentials([
+                    gitUsernamePassword(credentialsId: scm.getUserRemoteConfigs()[0].getCredentialsId())
+                ]) {
+                    bat label: 'Tag current build',
+                        script: """
+                            git config user.email \"${TAG_EMAIL}\"
+                            git config user.name \"${TAG_USER}\"
+                            git tag -a ci-${env.BUILD_NUMBER} -m \"${env.JOB_BASE_NAME}: build ${env.BUILD_NUMBER} succeeded\"
+                            git push origin --tags
+                        """
+                }
+            }
+        }
+    }
+}
+
+
+

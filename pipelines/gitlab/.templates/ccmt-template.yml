@@ -1,0 +1,23 @@
+.mci_ccmt:
+  script:
+    - >
+      if ($UPGRADEORACLEVARIANT -eq 'true') {
+        & $AgentMettleCmd datastage ccmt `
+        -domain $IISDomainName `
+        -server $IISEngineName `
+        -username $IISUsername -password $IISPassword `
+        -project $DATASTAGE_PROJECT `
+        -project-cache $AgentMettleHome/cache/$IISEngineName/$DATASTAGE_PROJECT `
+        -isxdirectory datastage -logfile $CI_PROJECT_DIR/log/ccmt/log/cc_migrate.log.txt -threads 4 `
+        -param " -M " `
+        -param " -T " -param " -V OracleConnector=$UPGRADEDORACLEVERSION,OracleConnectorPX=$UPGRADEDORACLEVERSION "  
+      } else {
+        & $AgentMettleCmd datastage ccmt `
+        -domain $IISDomainName `
+        -server $IISEngineName `
+        -username $IISUsername -password $IISPassword `
+        -project $DATASTAGE_PROJECT `
+        -project-cache $AgentMettleHome/cache/$IISEngineName/$DATASTAGE_PROJECT `
+        -isxdirectory datastage -logfile $CI_PROJECT_DIR/log/ccmt/log/cc_migrate.log.txt -threads 4 `
+        -param " -M "  
+      }

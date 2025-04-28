@@ -1,0 +1,176 @@
+// Jenkins MettleCI DevOps Pipeline - Branch-based approach
+
+// In Jenkins configuration, under Jenkins -> Manage Jenkins -> Configure System -> Global Pipeline Libraries,
+// add a refeerence to the Jenkins MCI Shared Libraries, giving it the name "jenkins-mci-shared-libraries"
+// Doing that allows this line to reference that shared library and use the MettleCI step types
+
+@Library('jenkins-templates') _
+
+pipeline {
+  	agent none
+
+    tools {
+        jdk 'jdk-8'
+    }
+
+    options { skipDefaultCheckout() }
+
+    parameters {
+        choice (name: 'targetEnvironment', choices: ['qa', 'perf', 'prod'], description: 'Deploy to environment')
+    }
+
+    environment {
+        IIS_BASE_PROJECT_NAME = '<BASE_PROJECT_NAME>'
+
+        PS_SPECIALHANDLING = true
+
+        ENVID = "${env.targetEnvironment}"
+
+        USE_SSH_KEY = true
+        USE_SSH_PASSPHRASE = false
+
+        TAG_EMAIL = '<EMAIL>'
+        TAG_USER = '<USERNAME>'
+
+        NUM_TAGS_TO_DISPLAY =  5
+
+        HF_CREATION_PIPELINE = '<NAME_OF_HF_CREATION_PIPELINE_IN_JENKINS>'
+    }
+
+    stages {
+        stage('Select Release to Deploy') {
+            agent {
+                label "mettleci && datastage11.7"
+            }
+            steps {
+                script {
+                    switch(env.targetEnvironment) {
+                        case 'qa':
+                            TAG_PREFIX = "ci"
+                            break
+                        case 'perf':
+                            TAG_PREFIX = "qa"
+                            break 
+                        case 'prod':
+                            TAG_PREFIX = "perf"
+                            break
+                    }
+                } 
+
+                withCredentials([
+                    gitUsernamePassword(credentialsId: scm.getUserRemoteConfigs()[0].getCredentialsId())
+                ]) {
+                    script {
+                        def scr = """
+                            @echo off
+                            git ls-remote --tags --sort=\"-v:refname\" ${scm.getUserRemoteConfigs()[0].getUrl()} \"${TAG_PREFIX}-[0-9]*^{}\"
+                        """   
+
+                        String[] allTags = bat(script: scr, label: 'Retreive tags', returnStdout: true).trim().split("\n")
+                        def cleanedTags = []
+
+                        int tagsRemaining = env.NUM_TAGS_TO_DISPLAY
+
+                        for (String line in allTags) {
+                            if (tagsRemaining-- == 0)  break
+                            
+                            cleanedTags.add("${line.split("/")[-1][0..-4]}")
+                        }
+
+                        SELECTED_TAG = input message: 'Select the version to deploy', parameters: [choice(choices: cleanedTags.join('\n'),  description: 'Version', name: 'tag_response')]
+                    }
+                }
+
+                bat label: 'Deployment',
+                    script: "echo *** Deploying tag ${SELECTED_TAG} to ${env.targetEnvironment} ***"
+            }
+        }
+
+        stage('Deploy - Target') {
+            agent {
+                label "mettleci && datastage11.7 && ${ env.ENVID }"
+            }
+            environment {
+                DATASTAGE_PROJECT = "${env.IIS_BASE_PROJECT_NAME}_${env.ENVID}"
+                UPGRADE_DSPARAMS = false
+            }
+
+            steps {
+                withCredentials([
+                    string(credentialsId: "${env.IISPASSWORD}", variable: 'IISPASSWORD'),
+                    string(credentialsId: "${env.MCIPASSWORD}", variable: 'MCIPASSWORD'),
+                    string(credentialsId: "${env.SSHKEYPATH}", variable: 'SSHKEYPATH'),
+                    string(credentialsId: "${env.SSHKEYPHRASE}", variable: 'SSHKEYPHRASE')
+                ]) {
+                    checkout([  
+                        $class: 'GitSCM',
+                        branches: [[name: "refs/tags/${SELECTED_TAG}"]],
+                        doGenerateSubmoduleConfigurations: scm.doGenerateSubmoduleConfigurations,
+                        extensions: [[$class: 'CloneOption', noTags: false, shallow: false, depth: 0, reference: '']],
+                        userRemoteConfigs: scm.userRemoteConfigs,
+                    ])
+                    
+                    mci_deploy(
+                        true,
+                        UPGRADE_DSPARAMS,
+                        PS_SPECIALHANDLING,
+                        USE_SSH_KEY,
+                        USE_SSH_PASSPHRASE
+                    )
+                }
+            }
+        }
+
+        stage('Success - Tag Repository') {
+            agent {
+                label 'mettleci && datastage11.7'
+            }
+            steps {
+                withCredentials([
+                    gitUsernamePassword(credentialsId: scm.getUserRemoteConfigs()[0].getCredentialsId())
+                ]) {
+                    checkout([  
+                        $class: 'GitSCM',
+                        branches: [[name: "refs/tags/${SELECTED_TAG}"]],
+                        doGenerateSubmoduleConfigurations: scm.doGenerateSubmoduleConfigurations,
+                        extensions: [[$class: 'CloneOption', noTags: false, shallow: false, depth: 0, reference: '']],
+                        userRemoteConfigs: scm.userRemoteConfigs,
+                    ])
+
+                    bat label: 'Tag current build',
+                        script: """
+                            git config user.email \"${TAG_EMAIL}\"
+                            git config user.name \"${TAG_USER}\"
+                            git tag -a ${env.targetEnvironment}-${SELECTED_TAG.split('-')[1]}  -m \"${env.JOB_BASE_NAME}: ${SELECTED_TAG} deployed to ${env.targetEnvironment}\"
+                            git push -f origin --tags
+                        """
+                }
+            
+                script {
+                    currentBuild.displayName = "#${env.BUILD_NUMBER}: ${env.targetEnvironment}-${SELECTED_TAG.split('-')[1]}"
+                    currentBuild.description = "${SELECTED_TAG} deployed to ${env.targetEnvironment}"
+                }
+            }
+        }
+
+        stage('Call Hotfix Creation Pipeline')
+        {
+            agent {
+                label 'mettleci && datastage11.7'
+            }
+            when { expression {env.targetEnvironment == "prod"} }
+            steps {
+                bat label: 'Calling child',
+                    script: "echo Calling ${env.HF_CREATION_PIPELINE} with TRIGGER_TAG: ${env.targetEnvironment}-${SELECTED_TAG.split('-')[1]}"
+
+                script {
+                    build(
+                        job: "${env.HF_CREATION_PIPELINE}",
+                        parameters: [string(name: "TRIGGER_TAG", value: "${env.targetEnvironment}-${SELECTED_TAG.split('-')[1]}")],
+                        waitForBuild: false
+                    )
+                }
+            }
+        }
+    }
+}

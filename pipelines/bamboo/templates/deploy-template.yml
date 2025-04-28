@@ -1,0 +1,60 @@
+  - clean
+  - artifact-download:
+      artifacts:
+      - destination: datastage
+        name: Datastage Assets
+      - destination: filesystem
+        name: Filesystem Assets
+      - name: Config Overrides
+      description: Download release contents
+  - mci-datastage-admin:
+      server: ${bamboo.ServerName}
+      default-location: 'true'
+      admin-type: CREATE_PROJECT
+      project-name: ${bamboo.ProjectName}
+      dsclient: DataStageClient
+      domain: ${bamboo.DomainName}
+      shared-credentials: DataStageCredentials
+      description: Create Datastage Project
+  - mci-properties-configuration:
+      baseDir: datastage
+      filePatterns: |-
+        *.apt
+        DSParams
+        Parameter Sets/*/*
+      outputDir: config
+      overrideFile: var.${bamboo.EnvironmentID}
+      description: Substitute parameters in DataStage config
+  - mci-sftp-upload:
+      destination-dir: ${bamboo.buildResultKey}-${bamboo.EnvironmentID}
+      transfer-pattern: filesystem/**/*,config/*
+      port: '22'
+      host: ${bamboo.ServerName}
+      username: ${bamboo.ServerUsername}
+      shared-credentials: SSHKeyName
+      description: Transfer DataStage config and file system assets
+  - ssh:
+      host: ${bamboo.ServerName}
+      command: "# exit on failure\r\nset -e\r\n\r\n#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\r\n# Source DataStage environment\r\n#\r\ncase `uname` in\r\n    \"Windows\"*) \r\n        # Windows\r\n        DSHOME=`registry -p -u -k \"HKLM\\SOFTWARE\\Ascential Software\\DataStage\\DSEngine\\CurrentVersion\" -n DSEHome -3`\r\n        break\r\n        ;;\r\n    *)\r\n        # Linux/Unix\r\n        if [ -f \"/.dshome\" ]\r\n        then\r\n            DSHOME=`cat /.dshome`\r\n            . $DSHOME/dsenv\r\n        else\r\n            echo \"ERROR: .dshome is missing on server - is ${bamboo.ServerName} a valid datastage engine?\"\r\n            exit -1\r\n        fi\r\n        ;;\r\nesac\r\n\r\nBUILDHOME=`pwd`/${bamboo.buildResultKey}-${bamboo.EnvironmentID}\r\nPROJECTHOME=`$DSHOME/bin/dsjob -projectinfo ${bamboo.ProjectName} | tail -1 | awk -F \": \" '{print $2}' | tr -d '\\r'`\r\n#------------------------------------------------------------------------------\r\n\r\n\r\n\r\n#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\r\n# Deploy DataStage configurations\r\n#\r\n\r\n# DSParams\r\nif [ -f \"$BUILDHOME/config/DSParams\" ]\r\nthen\r\n    cp $BUILDHOME/config/DSParams $PROJECTHOME/\r\nfi\r\n\r\n# Projects APT Config files\r\nset -- $BUILDHOME/config/*.apt\r\nif [ -f \"$1\" ]\r\nthen\r\n    #mkdir -p ${bamboo_DatastageConfigPath}\r\n\r\n    # TODO: Find a better approach for this\r\n    #rm -f ${bamboo_DatastageConfigPath}/*.apt\r\n    #cp $BUILDHOME/config/*.apt ${bamboo_DatastageConfigPath}\r\n\r\n    grep -e \"resource disk\" -e \"resource scratchdisk\" $BUILDHOME/config/*.apt | awk -F \"[\\\"']\" '{print $2}' | sort -u | xargs -n1 mkdir -p\r\nfi\r\n#------------------------------------------------------------------------------\r\n\r\n\r\n\r\n#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\r\n# Defer to filesystem deployment script\r\n#\r\n\r\nif [ -f \"$BUILDHOME/filesystem/deploy.sh\" ]\r\nthen\r\n    cd $BUILDHOME/filesystem\r\n     \r\n    chmod u+x $BUILDHOME/filesystem/deploy.sh\r\n    $BUILDHOME/filesystem/deploy.sh -p ${bamboo.ProjectName} -e ${bamboo.EnvironmentID}\r\nelse\r\n    echo \"ERROR: filesystem/deploy.sh script not found, skipping\"\r\n    exit -1\r\nfi\r\n#------------------------------------------------------------------------------\""
+      authentication:
+        username: ${bamboo.ServerUsername}
+        shared-credentials: SSHKeyName
+      description: Deploy DataStage config and file system assets
+  - mci-incremental-datastage-deployment:
+      server: ${bamboo.ServerName}
+      params-dir: config/Parameter Sets
+      project-name: ${bamboo.ProjectName}
+      dsclient: DataStageClient
+      max-threads: '8'
+      domain: ${bamboo.DomainName}
+      location: datastage
+      deploy-params: 'true'
+      shared-credentials: DataStageCredentials
+      description: Deploy DataStage project
+  - ssh:
+      host: ${bamboo.ServerName}
+      command: "BUILDHOME=`pwd`/${bamboo.buildResultKey}-${bamboo.EnvironmentID}\r\nrm -rf $BUILDHOME"
+      authentication:
+        username: ${bamboo.ServerUsername}
+        shared-credentials: SSHKeyName
+      description: Cleanup temporary file

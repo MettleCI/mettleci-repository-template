@@ -1,0 +1,231 @@
+include: 
+  - local: '.templates/deploy-template.yml'
+  - local: '.templates/compliance-template.yml'
+  - local: '.templates/unittest-template.yml'
+
+
+stages:
+  - diagnostics
+  - deploy_ci
+  - compliance_ci
+  - unittest_ci
+  - deploy_qa
+  - unittest_qa
+  - deploy_perf
+  - unittest_perf
+  - deploy_prod
+  - unittest_prod
+
+
+# Values enclosed in <...> are placeholders (eg: <BASE_PROJECT_NAME>), and describe the 
+# information required.
+variables:
+  BaseIISProjectName: <BASE_PROJECT_NAME>
+  ComplianceRepo: <COMPLAINCE_REPO_PATH>
+# eg: gitlab.com/your_company_name/compliance
+  ComplianceFatalTags: 'fail-ci'
+  PSSPECIALHANDLING: 'true'
+# 'true' or 'false'
+
+diagnostics:
+  stage: diagnostics
+  tags:
+    - mettleci
+    - datastage11.7
+  environment: 
+    name: CI
+  variables:
+    DATASTAGE_PROJECT: '${BaseIISProjectName}_${ENVID}'
+  script:
+    - >
+      if (-not ([string]::IsNullOrEmpty($AlternateJavaPath))) {
+        $env:Path = "$AlternateJavaPath;" + $env:Path
+      }
+    - $env:Path
+    - echo ${DATASTAGE_PROJECT}
+    - echo $AgentMettleCmd
+    - echo $IISEngineName
+    - echo $IISUsername
+    - echo $IISPassword
+    - echo $IISProjectTemplateDir
+    - echo $UnitTestPath
+    - echo $AgentMettleCmd
+    - echo $AgentMettleHome
+    - echo $MCIUserName
+    - echo $MCIPassword
+    - java -version
+
+
+deploy_ci:
+  stage: deploy_ci
+  tags:
+    - mettleci
+    - datastage11.7
+  environment: 
+    name: CI
+  variables:
+    # Set the name of the DataStage target project for this environment
+    DATASTAGE_PROJECT: '${BaseIISProjectName}_${ENVID}'
+    UpdateDSParams: 'false'
+  script:
+    - >
+      if (-not ([string]::IsNullOrEmpty($AlternateJavaPath))) {
+        $env:Path = "$AlternateJavaPath;" + $env:Path
+      }
+    - !reference [.mci_deploy, script]
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/log/**/mettleci_compilation.xml
+    reports:
+      junit: $CI_PROJECT_DIR/log/**/mettleci_compilation.xml
+
+compliance_ci:errors:
+  stage: compliance_ci
+  tags:
+    - mettleci
+    - datastage11.7
+  environment: 
+    name: CI
+  variables:
+    # Set the name of the DataStage target project for this environment
+    DATASTAGE_PROJECT: '${BaseIISProjectName}_${ENVID}'
+    IncludeTags: ${ComplianceFatalTags}
+    ExcludeTags: example
+    ComplianceSuite: Errors
+  allow_failure: false
+  script:
+    - >
+      if (-not ([string]::IsNullOrEmpty($AlternateJavaPath))) {
+        $env:Path = "$AlternateJavaPath;" + $env:Path
+      }
+    - !reference [.mci_compliance, script]
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/compliance-reports/compliance_report_$ComplianceSuite.xml
+    reports:
+      junit: $CI_PROJECT_DIR/compliance-reports/compliance_report_$ComplianceSuite.xml
+
+compliance_ci:warnings:
+  stage: compliance_ci
+  tags:
+    - mettleci
+    - datastage11.7
+  environment: 
+    name: CI
+  variables:
+    # Set the name of the DataStage target project for this environment
+    DATASTAGE_PROJECT: '${BaseIISProjectName}_${ENVID}'
+    IncludeTags: 
+    ExcludeTags: example,${ComplianceFatalTags}
+    ComplianceSuite: Warnings
+  allow_failure: true
+  script:
+    - >
+      if (-not ([string]::IsNullOrEmpty($AlternateJavaPath))) {
+        $env:Path = "$AlternateJavaPath;" + $env:Path
+      }
+    - !reference [.mci_compliance, script]
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/compliance-reports/compliance_report_$ComplianceSuite.xml
+    reports:
+      junit: $CI_PROJECT_DIR/compliance-reports/compliance_report_$ComplianceSuite.xml
+
+unittest_ci:
+  stage: unittest_ci
+  tags:
+    - mettleci
+    - datastage11.7
+  environment: 
+    name: CI
+  variables:
+    # Set the name of the DataStage target project for this environment
+    DATASTAGE_PROJECT: '${BaseIISProjectName}_${ENVID}'
+  script:
+    - >
+      if (-not ([string]::IsNullOrEmpty($AlternateJavaPath))) {
+        $env:Path = "$AlternateJavaPath;" + $env:Path
+      }
+    - !reference [.mci_unittest, script]
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/unittest-reports/$DATASTAGE_PROJECT/**/*.xml
+    reports:
+      junit: $CI_PROJECT_DIR/unittest-reports/$DATASTAGE_PROJECT/**/*.xml
+
+
+deploy_qa:
+  stage: deploy_qa
+  tags:
+    - mettleci
+    - datastage11.7
+  environment: 
+    name: QA
+  variables:
+    # Set the name of the DataStage target project for this environment
+    DATASTAGE_PROJECT: '${BaseIISProjectName}_${ENVID}'
+    UpdateDSParams: 'false'
+  script:
+    - >
+      if (-not ([string]::IsNullOrEmpty($AlternateJavaPath))) {
+        $env:Path = "$AlternateJavaPath;" + $env:Path
+      }
+    - !reference [.mci_deploy, script]
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/log/compilation/**/mettleci_compilation.xml
+    reports:
+      junit: $CI_PROJECT_DIR/log/compilation/**/mettleci_compilation.xml
+  when: manual
+  allow_failure: false
+
+
+deploy_perf:
+  stage: deploy_perf
+  tags:
+    - mettleci
+    - datastage11.7
+  environment: 
+    name: PERF
+  variables:
+    # Set the name of the DataStage target project for this environment
+    DATASTAGE_PROJECT: '${BaseIISProjectName}_${ENVID}'
+    UpdateDSParams: 'false'
+  script:
+    - >
+      if (-not ([string]::IsNullOrEmpty($AlternateJavaPath))) {
+        $env:Path = "$AlternateJavaPath;" + $env:Path
+      }
+    - !reference [.mci_deploy, script]
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/log/compilation/**/mettleci_compilation.xml
+    reports:
+      junit: $CI_PROJECT_DIR/log/compilation/**/mettleci_compilation.xml
+  when: manual
+  allow_failure: false
+
+deploy_prod:
+  stage: deploy_prod
+  tags:
+    - mettleci
+    - datastage11.7
+  environment: 
+    name: PROD
+  variables:
+    # Set the name of the DataStage target project for this environment
+    DATASTAGE_PROJECT: '${BaseIISProjectName}_${ENVID}'
+    UpdateDSParams: 'false'
+  script:
+    - >
+      if (-not ([string]::IsNullOrEmpty($AlternateJavaPath))) {
+        $env:Path = "$AlternateJavaPath;" + $env:Path
+      }
+    - !reference [.mci_deploy, script]
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/log/compilation/**/mettleci_compilation.xml
+    reports:
+      junit: $CI_PROJECT_DIR/log/compilation/**/mettleci_compilation.xml
+  when: manual
+  allow_failure: false

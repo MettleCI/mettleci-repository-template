@@ -1,0 +1,26 @@
+.mci_compliance:
+  script:
+    - git clone https://gitlab-ci-token:${CI_JOB_TOKEN}@${ComplianceRepo}
+    - $ComplianceRepoName = $ComplianceRepo.split('/')[-1]
+    - echo $ComplianceRepoName
+    - >
+      if ($IncludeTags -eq "") {
+        & $AgentMettleCmd compliance test `
+        -assets $CI_PROJECT_DIR/datastage `
+        -report "compliance-reports/compliance_report_$ComplianceSuite.xml" `
+        -junit `
+        -rules $CI_PROJECT_DIR/$ComplianceRepoName `
+        -exclude-tags $ExcludeTags `
+        -project-cache $AgentMettleHome/cache/$IISEngineName/$DATASTAGE_PROJECT `
+        -test-suite "$ComplianceSuite"
+      } else {
+        & $AgentMettleCmd compliance test `
+        -assets $CI_PROJECT_DIR/datastage `
+        -report "compliance-reports/compliance_report_$ComplianceSuite.xml" `
+        -junit `
+        -rules $CI_PROJECT_DIR/$ComplianceRepoName `
+        -include-tags $IncludeTags `
+        -exclude-tags $ExcludeTags `
+        -project-cache $AgentMettleHome/cache/$IISEngineName/$DATASTAGE_PROJECT `
+        -test-suite "$ComplianceSuite"
+      }

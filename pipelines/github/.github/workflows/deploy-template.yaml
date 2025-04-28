@@ -1,0 +1,271 @@
+# ███╗   ███╗███████╗████████╗████████╗██╗     ███████╗ ██████╗██╗
+# ████╗ ████║██╔════╝╚══██╔══╝╚══██╔══╝██║     ██╔════╝██╔════╝██║
+# ██╔████╔██║█████╗     ██║      ██║   ██║     █████╗  ██║     ██║
+# ██║╚██╔╝██║██╔══╝     ██║      ██║   ██║     ██╔══╝  ██║     ██║
+# ██║ ╚═╝ ██║███████╗   ██║      ██║   ███████╗███████╗╚██████╗██║
+# ╚═╝     ╚═╝╚══════╝   ╚═╝      ╚═╝   ╚══════╝╚══════╝ ╚═════╝╚═╝
+# MettleCI DevOps for DataStage       (C) 2021-2025 Data Migrators
+
+name: MettleCI Deploy Template
+
+# This workflow is used to deploy DataStage assets to a DataStage server. # It is designed to be called
+# from other workflows, such as the main deployment workflow 'mettleci_devops.yaml'.
+# The workflow is triggered by a workflow_call event which allows it to be called from other workflows,
+# and uses the MettleCI CLI to perform the deployment and configuration of DataStage assets. The workflow 
+# takes several inputs, including the DataStage project name, environment name, and other parameters.
+# See the on -> workflow_call -> inputs object for details.
+# This workflow also includes steps to fetch and merge DSParams files, configure properties, and execute
+# arbitrary user-specified deployment scripts.
+# Finally, the workflow includes steps to publish compilation test results, if specified.
+# The workflow is designed to be flexible and reusable, allowing for easy integration into different
+# deployment workflows.
+
+# Define the parameters for this reusable workflow
+on:
+  workflow_call:
+    inputs:
+      # The RunOn parameter specifies the requirements of the agent on which the job will run
+      RunOn:
+        required: true
+        type: string
+      # The EnvironmentName parameter specifies the long name of the environment
+      # e.g. Quality Assurance, Production, etc.
+      EnvironmentName:
+        description: ''
+        required: true
+        type: string
+      # The EnvID parameter specifies the environment ID
+      # e.g. 'CI', 'QA', etc.
+      EnvID:
+        required: true
+        type: string
+      UpdateDSParams:
+        description: 'True to update DSParams file'
+        required: false
+        type: boolean
+        default: false
+      IISDomainName:
+        description: ''
+        required: true
+        type: string
+      IISEngineName:
+        description: ''
+        required: true
+        type: string
+      DatastageProject:
+        description: ''
+        required: true
+        type: string
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/1356890161/MettleCI+CLI+and+the+project-cache+directory
+      ProjectCacheDir:
+        description: ''
+        required: true
+        type: string
+      IISUsername:
+        description: ''
+        required: true
+        type: string
+      MCIUsername:
+        description: ''
+        required: true
+        type: string
+      # The PublishCompilationTests parameter specifies whether to publish the compilation test results
+      PublishCompilationTests:
+        required: false
+        type: boolean
+        default: false
+      # The AgentMettleCmd parameter specifies the path to the MettleCI CLI
+      AgentMettleCmd:
+        required: true
+        type: string
+      ProjectTemplate:
+        description: 'Path of DataStage template project. Required if UpdateDSParams is set to true'
+        required: false
+        type: string
+        default: ''
+      PSSpecialHandling:
+        required: false
+        type: boolean
+        default: false
+      # The AlternateJavaPath parameter specifies the path to an alternate Java installation
+      # This is used if you want the MettleCI CLI to run with a specific Java version
+      AlternateJavaPath:
+        description: 'If agent primary Java version > 8, specify alternate JDK8 path for MettleCI CLI'
+        required: false
+        type: string
+        default: ''
+
+# Specify GitHub Token permissions
+permissions:
+  contents: read
+  checks: write
+
+# Where the (Windows based) runner should execute commands
+defaults:
+  run:
+    shell: cmd
+
+jobs:
+  DeployMettleCIProject: 
+    runs-on: ${{ fromJSON(inputs.RunOn) }}
+    environment: ${{ inputs.EnvironmentName }}
+    env:
+      DATASTAGE_PROJECT: ${{ inputs.DatastageProject }}
+      ENVID: ${{ inputs.EnvID }}
+      IISENGINENAME: ${{ inputs.IISEngineName }}
+      PSSPECIALHANDLING: ${{ inputs.PSSpecialHandling }}
+    steps:
+      # Use our DataStage repository using the checkout action
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Optionally set up an alternative Java environment for the MettleCI CLI
+      - name: Set Alternate Java for Job
+        if: ${{ inputs.AlternateJavaPath != '' }}
+        run: |
+          echo PATH=${{ inputs.AlternateJavaPath }};%PATH%>> %GITHUB_ENV%
+
+      # If you've specified the PSSPecialHandling flag then prepare the parameters for the Deploy command
+      # For more information see the documentation of the MettleCI DataStage Deploy command:
+      # https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/423952410/DataStage+Deploy+Command
+      - name: Determine ParameterSet Special Handling
+        id: set-PSSpecialHandling
+        run: |
+          IF "%PSSPECIALHANDLING%"=="true" (
+            echo PSPropertiesConfig=-filePattern "Parameter Sets/*/*">> %GITHUB_OUTPUT%
+            echo PSDeploy=-parameter-sets "config\Parameter Sets">> %GITHUB_OUTPUT%
+          ) ELSE (
+            echo PSPropertiesConfig=>> %GITHUB_OUTPUT%
+            echo PSDeploy=>> %GITHUB_OUTPUT%
+          )
+
+      # This step verifies that the specified DataStage project already exists, or creates it if required
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/408420417/DataStage+Create-Project+Command
+      - name: Create Project
+        run: |
+          ${{ inputs.AgentMettleCmd }} datastage create-project ^
+            -domain ${{ inputs.IISDomainName }} ^
+            -username ${{ inputs.IISUsername }} ^
+            -password ${{ secrets.IISPASSWORD }} ^
+            -server ${{ inputs.IISEngineName }} ^
+            -project ${{ inputs.DatastageProject }}
+
+      # Many of the initial steps below focus on environmenal parameter management
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/469631007/Parameter+Management+for+Automated+Deployment
+
+      # This step fetches the DataStage project from the server, and merges it with the local project
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/716636187/Remote+Download+Command
+      - name: Fetch Template DSParams
+        if: ${{ inputs.UpdateDSParams }}
+        run: |
+          ${{ inputs.AgentMettleCmd }} remote download ^
+            -host ${{ inputs.IISEngineName }} ^
+            -username ${{ inputs.MCIUsername }} -password ${{ secrets.MCIPASSWORD }} ^
+            -source ${{ inputs.ProjectTemplate }}/ ^
+            -destination ${{ github.workspace }}/templates/ ^
+            -transferPattern "DSParams"
+
+      # Create the artifacts directory if it doesn't exist
+      - name: Create artifacts dir
+        if: ${{ inputs.UpdateDSParams }}
+        run: |
+          cd ${{ github.workspace }}
+          if not exist artifacts mkdir artifacts
+
+      # This step fetches the DS Params diff file from the server
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/2501181441/How+the+DSParams+file+is+managed+in+a+DevOps+pipeline
+      - name: Fetch diff
+        if: ${{ inputs.UpdateDSParams }}
+        uses: actions/download-artifact@v4
+        with:
+          name: DSParams.diff
+          path: |
+            ${{ github.workspace }}/artifacts/Diffs
+
+      # This step merges the DSParams file from the server with the local project
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/458556064/DSParams+Merge+Command
+      - name: Generate merged DSParams
+        if: ${{ inputs.UpdateDSParams }}
+        id: GenerateDSParams
+        run: |
+              ${{ inputs.AgentMettleCmd }} dsparams merge ^
+                -before ${{ github.workspace }}/templates/DSParams ^
+                -after ${{ github.workspace }}/datastage/DSParams ^
+                -diff ${{ github.workspace }}/artifacts/Diffs/DSParams.diff 
+
+      # This step replaces variable values in one or more specified files using replacement values from a properties file
+      # It is used to update the DSParams file with the merged values from the previous step
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/718962693/Properties+Config+Command
+      - name: Configure Properties
+        run: |
+              ${{ inputs.AgentMettleCmd }} properties config ^
+                -baseDir ${{ github.workspace }}/datastage ^
+                -filePattern "*.apt" ^
+                -filePattern "*.sh" ^
+                -filePattern "DSParams" ^
+                ${{ steps.set-PSSpecialHandling.outputs.PSPropertiesConfig }} ^
+                -properties varfiles/var.${{ inputs.EnvID }} ^
+                -outDir ${{ github.workspace }}/config
+
+      # This step executes a user-defined script to perform any additional configuration or setup required
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/784367633/Remote+Execute+Command
+      - name: Cleanup
+        run: |
+              ${{ inputs.AgentMettleCmd }} remote execute ^
+                -host ${{ inputs.IISEngineName }} ^
+                -username ${{ inputs.MCIUsername }} -password ${{ secrets.MCIPASSWORD }} ^
+                -script ${{ github.workspace }}/config/cleanup.sh
+
+      # This step uploads the configuration files to the DataStage server
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/716603405/Remote+Upload+Command
+      - name: Upload config files
+        run: |
+              ${{ inputs.AgentMettleCmd }} remote upload ^
+                -host ${{ inputs.IISEngineName }} ^
+                -username ${{ inputs.MCIUsername }} -password ${{ secrets.MCIPASSWORD }} ^
+                -source "${{ github.workspace }}/." ^
+                -destination ${{ inputs.DatastageProject }} ^
+                -transferPattern "filesystem/**/*,config/*"
+
+      # This step executes a user-defined script to perform any additional deployment processes required
+      - name: Execute deploy script
+        run: |
+              ${{ inputs.AgentMettleCmd }} remote execute ^
+                -host ${{ inputs.IISEngineName }} ^
+                -username ${{ inputs.MCIUsername }} -password ${{ secrets.MCIPASSWORD }} ^
+                -script ${{ github.workspace }}/config/deploy.sh
+
+      # This step deploys the DataStage assets to the server 
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/423952410/DataStage+Deploy+Command               
+      - name: Deploy DataStage assets
+        run: |
+              ${{ inputs.AgentMettleCmd }} datastage deploy ^
+                -domain ${{ inputs.IISDomainName }} ^
+                -server ${{ inputs.IISEngineName }} ^
+                -username ${{ inputs.IISUsername }} -password ${{ secrets.IISPASSWORD }} ^
+                -project ${{ inputs.DatastageProject }} ^
+                -project-cache ${{ inputs.ProjectCacheDir }} ^
+                ${{ steps.set-PSSpecialHandling.outputs.PSDeploy }} ^
+                -assets datastage ^
+                -threads 1 ^
+                -include-job-in-test-name
+
+      # Identify the presence of any JUnit XML test output files
+      - name: Check For Test Results
+        id: set-fileExists
+        if: ${{ inputs.PublishCompilationTests }}
+        run: echo fileExists=Test-Path -Path "${{ github.workspace }}/log/**/mettleci_compilation.xml">> %GITHUB_OUTPUT%
+
+      # Publish JUnit XML compilation test output files to GitHub for presentation in the Actions tab
+      # This uses a third party GitHub action as there is no equivalent native GitHub capability 
+      # See https://github.com/mikepenz/action-junit-report
+      - name: 'Publish compilation results'
+        if: (${{ inputs.PublishCompilationTests }} == true and ${{ steps.set-fileExists.outputs.fileExists }} == true)
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: "${{ github.workspace }}/log/**/mettleci_compilation.xml"
+          require_tests: false
+          fail_on_failure: true
+          check_name: "Post-Deploy DataStage Compilation - ${{ inputs.EnvironmentName }}"
+          summary: true
+          token: ${{ github.token }}

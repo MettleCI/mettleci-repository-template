@@ -1,0 +1,91 @@
+.mci_deploy:
+  script:
+    - >
+      & $AgentMettleCmd datastage create-project
+      -domain $IISDomainName
+      -username $IISUsername
+      -password $IISPassword
+      -server $IISEngineName
+      -project $DATASTAGE_PROJECT
+    - >
+      if ($UpdateDSParams -eq "true") { 
+        & $AgentMettleCmd remote download `
+        -host $IISEngineName `
+        -username $MCIUsername -password $MCIPassword `
+        -source $IISProjectTemplateDir/ `
+        -destination $CI_PROJECT_DIR/templates/ `
+        -transferPattern "DSParams"
+      }
+    - >
+      if ($UpdateDSParams -eq "true") { 
+      if (!(Test-Path -PathType container $CI_PROJECT_DIR\artifacts)) {
+      New-Item -ItemType Directory -Path $CI_PROJECT_DIR\artifacts
+      }
+      }
+    - >
+      if ($UpdateDSParams -eq "true") { 
+        & $AgentMettleCmd dsparams merge `
+        -before $CI_PROJECT_DIR/templates/DSParams `
+        -after $CI_PROJECT_DIR/datastage/DSParams `
+        -diff $CI_PROJECT_DIR/artifacts/DSParams.diff  
+      }
+    - >
+      if ($PSSPECIALHANDLING -eq 'true') {
+        & $AgentMettleCmd properties config `
+        -baseDir $CI_PROJECT_DIR/datastage `
+        -filePattern "*.apt" `
+        -filePattern "*.sh" `
+        -filePattern "DSParams" `
+        -filePattern "Parameter Sets/*/*" `
+        -properties varfiles/var.${ENVID} `
+        -outDir $CI_PROJECT_DIR/config
+      } else {
+        & $AgentMettleCmd properties config `
+        -baseDir $CI_PROJECT_DIR/datastage `
+        -filePattern "*.apt" `
+        -filePattern "*.sh" `
+        -filePattern "DSParams" `
+        -properties varfiles/var.${ENVID} `
+        -outDir $CI_PROJECT_DIR/config
+      }
+    - >
+      & $AgentMettleCmd remote execute 
+      -host $IISEngineName 
+      -username $MCIUsername -password $MCIPassword 
+      -script $CI_PROJECT_DIR/config/cleanup.sh
+    - >
+      & $AgentMettleCmd remote upload 
+      -host $IISEngineName 
+      -username $MCIUsername -password $MCIPassword 
+      -source "$CI_PROJECT_DIR/." 
+      -destination $DATASTAGE_PROJECT 
+      -transferPattern "filesystem/**/*,config/*"
+    - >
+      & $AgentMettleCmd remote execute 
+      -host $IISEngineName 
+      -username $MCIUsername -password $MCIPassword 
+      -script $CI_PROJECT_DIR/config/deploy.sh
+    - >
+      if ($PSSPECIALHANDLING -eq 'true') {
+        & $AgentMettleCmd datastage deploy `
+        -domain $IISDomainName `
+        -server $IISEngineName `
+        -username $IISUsername -password $IISPassword `
+        -project $DATASTAGE_PROJECT `
+        -project-cache $AgentMettleHome/cache/$IISEngineName/$DATASTAGE_PROJECT `
+        -assets datastage `
+        -parameter-sets "config/Parameter Sets"`
+        -threads 1 `
+        -include-job-in-test-name
+      } else {
+        & $AgentMettleCmd datastage deploy `
+        -domain $IISDomainName `
+        -server $IISEngineName `
+        -username $IISUsername -password $IISPassword `
+        -project $DATASTAGE_PROJECT `
+        -project-cache $AgentMettleHome/cache/$IISEngineName/$DATASTAGE_PROJECT `
+        -assets datastage `
+        -threads 1 `
+        -include-job-in-test-name
+      }
+

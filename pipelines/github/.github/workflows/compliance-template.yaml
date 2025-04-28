@@ -1,0 +1,181 @@
+# ███╗   ███╗███████╗████████╗████████╗██╗     ███████╗ ██████╗██╗
+# ████╗ ████║██╔════╝╚══██╔══╝╚══██╔══╝██║     ██╔════╝██╔════╝██║
+# ██╔████╔██║█████╗     ██║      ██║   ██║     █████╗  ██║     ██║
+# ██║╚██╔╝██║██╔══╝     ██║      ██║   ██║     ██╔══╝  ██║     ██║
+# ██║ ╚═╝ ██║███████╗   ██║      ██║   ███████╗███████╗╚██████╗██║
+# ╚═╝     ╚═╝╚══════╝   ╚═╝      ╚═╝   ╚══════╝╚══════╝ ╚═════╝╚═╝
+# MettleCI DevOps for DataStage       (C) 2021-2025 Data Migrators
+
+# This workflow is a template for running unit tests in a DataStage environment using the MettleCI CLI.
+# It is designed to be called from other workflows and requires specific inputs to function correctly.
+
+name: MettleCI Compliance Template
+
+# Define the parameters for this reusable workflow
+on:
+  workflow_call:
+    inputs:
+      # The RunOn parameter specifies the requirements of the agent on which the job will run
+      RunOn:
+        required: true
+        type: string
+      # The EnvironmentName parameter specifies the long name of the environment
+      # e.g. Quality Assurance, Production, etc.
+      EnvironmentName:
+        required: true
+        type: string
+      ComplianceSuite:
+        required: true
+        type: string
+      ComplianceRepoName:
+        required: true
+        type: string
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/2472050689/Compliance+Rule+Tags
+      IncludeTags:
+        required: false
+        type: string
+        default: ''
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/2472050689/Compliance+Rule+Tags
+      ExcludeTags:
+        required: false
+        type: string
+        default: ''
+      DatastageProject:
+        required: true
+        type: string
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/1356890161/MettleCI+CLI+and+the+project-cache+directory
+      ProjectCacheDir:
+        description: ''
+        required: true
+        type: string
+      # The AgentMettleCmd parameter specifies the path to the MettleCI CLI
+      AgentMettleCmd:
+        required: true
+        type: string
+      # The ContinueOnError parameter specifies whether to continue the pipeline after an error
+      # This enables us to run different sets of Compliance rules with different error handling
+      ContinueOnError:
+        required: false
+        type: boolean
+        default: false
+      # The AlternateJavaPath parameter specifies the path to an alternate Java installation
+      # This is used if you want the MettleCI CLI to run with a specific Java version
+      AlternateJavaPath:
+        description: 'If agent primary Java version > 8, specify alternate JDK8 path for MettleCI CLI'
+        required: false
+        type: string
+        default: ""
+    secrets:
+      PAT:
+        required: true
+
+# Specify GitHub Token permissions
+permissions:
+  contents: read
+  checks: write
+
+# Where the (Windows based) runner should execute commands
+defaults:
+  run:
+    shell: cmd
+
+jobs:
+
+  # The following section is commented out for diagnostics purposes. 
+  # Uncomment to enable diagnostics.
+
+  # Diagnostics:
+  #   runs-on: ${{ fromJSON(inputs.RunOn) }}
+  #   steps:
+  #     - name: Print environment variables
+  #       run: |
+  #         echo "Github workspace directory: ${{ github.workspace }}"
+  #         echo "EnvironmentName: ${{ inputs.EnvironmentName }}"
+  #         echo "ComplianceSuite: ${{ inputs.ComplianceSuite }}"
+  #         echo "ComplianceRepoName: ${{ inputs.ComplianceRepoName }}"
+  #         echo "RulesDir: ${{ inputs.RulesDir }}"
+  #         echo "DatastageProject: ${{ inputs.DatastageProject }}"
+  #         echo "ProjectCacheDir: ${{ inputs.ProjectCacheDir }}"
+  #         echo "AgentMettleCmd: ${{ inputs.AgentMettleCmd }}"
+  #         echo "ContinueOnError: ${{ inputs.ContinueOnError }}"
+  #         echo "Done!"
+ 
+  Compliance_Test:
+    runs-on: ${{ fromJSON(inputs.RunOn) }}
+    environment: ${{ inputs.EnvironmentName }}
+    env:
+      INCLUDETAGS: ${{ inputs.IncludeTags }}
+      EXCLUDETAGS: ${{ inputs.ExcludeTags }}
+    steps:
+
+      # Check out the project repository
+      - name: Checkout Project Repo
+        uses: actions/checkout@master
+
+      # Check out the Compliance rule repository
+      - name: Checkout Compliance Repo
+        uses: actions/checkout@master
+        with:
+          repository: ${{ inputs.ComplianceRepoName }}
+          path: 'compliance'
+          ref: 'main'
+          token: ${{ secrets.PAT }}
+
+      # Sets the Java path if an alternate path is provided.
+      - name: Set Alternate Java for Job
+        if: ${{ inputs.AlternateJavaPath != '' }}
+        run: |
+          echo PATH=${{ inputs.AlternateJavaPath }};%PATH%>> %GITHUB_ENV%
+
+      # Configure the Include Tags for the compliance test execution
+      - name: Set included tags
+        id: set-includedTagsOption
+        run: |
+          IF "%INCLUDETAGS%"=="" (
+            echo includedTagsOption=>> %GITHUB_OUTPUT%
+          ) ELSE (
+            echo includedTagsOption=-include-tags %INCLUDETAGS%>> %GITHUB_OUTPUT%
+          )
+
+      # Configure the Exclude Tags for the compliance test execution
+      - name: Set excluded tags
+        id: set-excludedTagsOption
+        run: |
+          IF "%EXCLUDETAGS%"=="" (
+            echo excludedTagsOption=-exclude-tags example>> %GITHUB_OUTPUT%
+          ) ELSE (
+            echo excludedTagsOption=-exclude-tags example,%EXCLUDETAGS%>> %GITHUB_OUTPUT%
+          )
+
+      # Run the compliance test command with the specified parameters
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/408322069/Compliance+Test+Command
+      - name: 'Run Compliance (${{ inputs.ComplianceSuite }})'
+        run: |
+          ${{ inputs.AgentMettleCmd }} compliance test ^
+            -assets ${{ github.workspace }}/datastage ^
+            -report "compliance-reports/compliance_report_${{ inputs.ComplianceSuite }}.xml" ^
+            -junit ^
+            -rules ${{ github.workspace }}/compliance ^
+            ${{ steps.set-includedTagsOption.outputs.includedTagsOption }} ^
+            ${{ steps.set-excludedTagsOption.outputs.excludedTagsOption }} ^
+            -project-cache ${{ inputs.ProjectCacheDir }} ^
+            -ignore-test-failures ^
+            -test-suite "${{ inputs.ComplianceSuite }}"
+
+      # Identify the presence of any JUnit XML compliance test output files
+      - name: Check For Test Results
+        id: set-fileExists
+        run: echo fileExists=Test-Path -Path "${{ github.workspace }}/compliance-reports/compliance_report_${{ inputs.ComplianceSuite }}.xml">> %GITHUB_OUTPUT%
+
+      # Publish JUnit XML compliance test output files to GitHub for presentation in the Actions tab
+      # This uses a third party GitHub action as there is no equivalent native GitHub capability 
+      # See https://github.com/mikepenz/action-junit-report
+      - name: 'Publish compliance test ${{ inputs.ComplianceSuite }} results'
+        if: (${{ steps.set-fileExists.outputs.fileExists }} == true)
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: "${{ github.workspace }}/compliance-reports/compliance_report_${{ inputs.ComplianceSuite }}.xml"
+          require_tests: false
+          fail_on_failure: ${{ inputs.ContinueOnError == false }}
+          check_name: "MettleCI Compliance - ${{ inputs.ComplianceSuite }} rules"
+          summary: true

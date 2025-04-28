@@ -1,0 +1,235 @@
+// Jenkins MettleCI DevOps Pipeline - Build Phase
+
+// In Jenkins configuration, under Jenkins -> Manage Jenkins -> Configure System -> Global Pipeline Libraries,
+// add a refeerence to the Jenkins MCI Shared Libraries, giving it the name "jenkins-mci-shared-libraries"
+// Doing that allows this line to reference that shared library and use the MettleCI step types
+
+@Library('jenkins-templates') _
+
+pipeline {
+  	agent none
+
+    tools {
+        jdk 'jdk-8'
+    }
+
+    options { skipDefaultCheckout() }
+
+	parameters {
+		string (name: "TRIGGER_TAG", description: "Tag driving the creation of the hotfix branch")
+	}
+
+    environment {
+        IIS_BASE_PROJECT_NAME = '<BASE_PROJECT_NAME>'
+
+        PS_SPECIALHANDLING = true
+
+        TAG_EMAIL = '<EMAIL>'
+        TAG_USER = '<USERNAME>'
+
+        USE_SSH_KEY = true
+        USE_SSH_PASSPHRASE = false
+
+		BRANCH_NAME = "hotfix/hf-${TRIGGER_TAG.split('-')[1]}"
+    }
+
+    stages {
+/*
+        stage("Diagnostics 11.7") {
+            agent {
+                label 'mettleci && datastage11.7'
+            }
+            environment {
+                ENVID = "hf"
+                DATASTAGE_PROJECT = "${env.IIS_BASE_PROJECT_NAME}_${env.ENVID}"
+            }
+
+            steps {
+                withCredentials([
+                    string(credentialsId: "${env.IISPASSWORD}", variable: 'IISPASSWORD'),
+                    string(credentialsId: "${env.MCIPASSWORD}", variable: 'MCIPASSWORD')
+                ]) {
+                    bat label: 'Diags 117', 
+                        script: """
+                            echo Diagnostics - 11.5 Non-Production
+                            echo IISUsername: %IISUSERNAME%
+                            echo IISPassword: %IISPASSWORD%
+                            echo IISDomainName: %IISDOMAINNAME%
+                            echo IISEngineName: %IISENGINENAME%
+                            echo EnvID: %ENVID%
+                            echo BaseIISProjectName: %IIS_BASE_PROJECT_NAME%
+                            echo DatastageProject: %DATASTAGE_PROJECT%
+                            echo ProjectCacheDir: %AGENTMETTLEHOME%\\cache\\%IISENGINENAME%\\%DATASTAGE_PROJECT%
+                            echo MCIUsername: %MCIUSERNAME%
+                            echo MCIPassword: %MCIPASSWORD%
+                            echo AgentMettleCmd: %AGENTMETTLEHOME%
+                            echo Agent Name: %NODE_NAME%
+ 							echo Tag: ${env.TRIGGER_TAG}
+							echo BRANCH_NAME: %BRANCH_NAME%
+                        """
+                }
+            }
+        }
+*/	
+
+		stage("Create hotfix branch") {
+            agent {
+                label 'mettleci && datastage11.7'
+            }
+
+            steps {
+                withCredentials([
+                    gitUsernamePassword(credentialsId: scm.getUserRemoteConfigs()[0].getCredentialsId())
+                ]) {
+                    checkout([  
+                        $class: 'GitSCM',
+                        branches: [[name: "refs/tags/${TRIGGER_TAG}"]],
+                        doGenerateSubmoduleConfigurations: scm.doGenerateSubmoduleConfigurations,
+                        extensions: [[$class: 'CloneOption', noTags: false, shallow: false, depth: 0, reference: '']],
+                        userRemoteConfigs: scm.userRemoteConfigs,
+                    ])
+
+                    bat label: 'Tag current build',
+                        script: """
+                            git config --global --replace-all user.email \"${TAG_EMAIL}\"
+                            git config --global --replace-all user.name \"${TAG_USER}\"
+							git fetch --all
+							git checkout -b ${BRANCH_NAME}
+							git status
+							git push --set-upstream origin ${BRANCH_NAME}
+							git status
+                        """
+                }
+            }
+		}
+
+        stage("Deploy - HF") {
+            agent {
+                label 'mettleci && datastage11.7'
+            }
+            environment {
+                ENVID = "hf"
+                DATASTAGE_PROJECT = "${env.IIS_BASE_PROJECT_NAME}_${env.ENVID}"
+                UPGRADE_DSPARAMS = false
+            }
+
+            steps {
+                withCredentials([
+                    string(credentialsId: "${env.IISPASSWORD}", variable: 'IISPASSWORD'),
+                    string(credentialsId: "${env.MCIPASSWORD}", variable: 'MCIPASSWORD'),
+                    string(credentialsId: "${env.SSHKEYPATH}", variable: 'SSHKEYPATH'),
+                    string(credentialsId: "${env.SSHKEYPHRASE}", variable: 'SSHKEYPHRASE')
+                ]) {
+                    mci_deploy(
+                        true,
+                        UPGRADE_DSPARAMS,
+                        PS_SPECIALHANDLING,
+                        USE_SSH_KEY,
+                        USE_SSH_PASSPHRASE
+                    )
+
+                    // Manually upload the unit tests to the HF project as it's a special case: target is an interactive project
+                    bat label: 'Configure Properties', 
+                        script: '''
+                            %AGENTMETTLECMD% properties config ^
+                            -baseDir datastage ^
+                            -filePattern "cleanup_unittest.sh" ^
+                            -properties varfiles/var.%ENVID% ^
+                            -outDir config
+                        '''
+
+                    script {
+                        if (USE_SSH_KEY.toBoolean() == true) {
+                            def SSHPassPhrase = "${((USE_SSH_PASSPHRASE.toBoolean()) == true)?" -passphrase \"${SSHKEYPHRASE}\"":""}"
+
+                            bat label: 'Cleanup', 
+                                script: """
+                                    %AGENTMETTLECMD% remote execute ^
+                                    -host %IISENGINENAME% ^
+                                    -username %MCIUSERNAME% -privateKey \"%SSHKEYPATH%\" ^
+                                    ${SSHPassPhrase} ^
+                                    -script "config/cleanup_unittest.sh"
+                                """
+
+                            bat label: 'Upload unit test specs', 
+                                script: """
+                                    %AGENTMETTLECMD% remote upload ^
+                                    -host %IISENGINENAME% ^
+                                    -username %MCIUSERNAME% -privateKey \"%SSHKEYPATH%\" ^
+                                    ${SSHPassPhrase} ^
+                                    -source unittest ^
+                                    -transferPattern \"**/*\" ^
+                                    -destination %ENGINEUNITTESTBASEDIR%/specs/%DATASTAGE_PROJECT%
+                                """
+                        } else {
+                            bat label: 'Cleanup', 
+                                script: '''
+                                    %AGENTMETTLECMD% remote execute ^
+                                    -host %IISENGINENAME% ^
+                                    -username %MCIUSERNAME% -password %MCIPASSWORD% ^
+                                    -script "config/cleanup_unittest.sh"
+                                '''
+
+                            bat label: 'Upload unit test specs', 
+                                script: '''
+                                    %AGENTMETTLECMD% remote upload ^
+                                    -host %IISENGINENAME% ^
+                                    -username %MCIUSERNAME% -password %MCIPASSWORD% ^
+                                    -source unittest ^
+                                    -transferPattern "**/*" ^
+                                    -destination %ENGINEUNITTESTBASEDIR%/specs/%DATASTAGE_PROJECT%
+                                '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Update Workbench - HF') {                    
+            agent {
+                label 'mettleci && datastage11.7'
+            }
+            environment {
+                ENVID = "hf"
+                DATASTAGE_PROJECT = "${env.IIS_BASE_PROJECT_NAME}_${env.ENVID}"
+            }
+
+            steps {
+                withCredentials([
+                    string(credentialsId: "${env.IISPASSWORD}", variable: 'IISPASSWORD'),
+                    string(credentialsId: "${env.MCIPASSWORD}", variable: 'MCIPASSWORD')
+                ]) {
+
+					bat label: "Set Workbench for new Hotfix branch",
+            			script: """
+							%AGENTMETTLECMD% workbench set-branch ^
+								-url %MCIWORKBENCHURL% ^
+								-username %IISUSERNAME% -password %IISPASSWORD% ^
+								-project %DATASTAGE_PROJECT% ^
+								-branch %BRANCH_NAME%
+							"""
+                }
+            }
+        } 
+
+        stage('Set Jenkins Build labels') {                    
+            agent {
+                label 'mettleci && datastage11.7'
+            }
+            environment {
+                ENVID = "hf"
+                DATASTAGE_PROJECT = "${env.IIS_BASE_PROJECT_NAME}_${env.ENVID}"
+            }
+
+            steps {
+                script {
+                    currentBuild.displayName = "#${env.BUILD_NUMBER}: ${BRANCH_NAME}"
+                    currentBuild.description = "Hotfix branch ${BRANCH_NAME} created"
+                }
+            }
+        }
+    }
+}
+
+
+

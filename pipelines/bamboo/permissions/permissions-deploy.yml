@@ -1,0 +1,50 @@
+---
+version: 2
+#==================
+#Deployment plan permissions allow you to control permissions for both deployment projects and deployment environments.
+#==================
+deployment:
+  name: Deployment for MyProject
+  
+deployment-permissions:
+- users:
+  - john
+  - paul
+  - george
+  - ringo
+  permissions:
+  - view
+  - edit
+
+environment-permissions:
+- QA:
+  - users:
+    - john
+    - paul
+    - george
+    - ringo
+    permissions:
+    - view
+    - edit
+    - deploy
+- PERF:
+  - users:
+    - john
+    - paul
+    - george
+    - ringo
+    permissions:
+    - view
+    - edit
+    - deploy
+- PROD:
+  - users:
+    - john
+    - paul
+    - george
+    - ringo
+    permissions:
+    - view
+    - edit
+    - deploy
+...

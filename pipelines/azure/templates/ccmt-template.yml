@@ -1,0 +1,95 @@
+# # Template for CCMT upgrade task
+
+parameters:
+- name: DomainName
+  type: string
+  default: ''
+- name: EngineName
+  type: string
+  default: ''
+- name: EnvironmentID
+  type: string
+  default: ''
+- name: EnvironmentName
+  type: string
+  default: ''
+- name: DatastageProject
+  type: string
+  default: ''
+- name: ProjectCacheDir
+  type: string
+  default: ''
+- name: IISUsername
+  type: string
+  default: ''
+- name: IISPassword
+  type: string
+  default: ''
+- name: mettlecicmd
+  type: string
+  default: ''
+- name: PublishCompilationTests
+  type: boolean
+  default: false
+- name: TestResultFiles
+  type: string
+  default: 'log/**/mettleci_compilation.xml'
+- name: ProjectTemplate
+  type: string
+  default: ''
+- name: UpgradeOracleVariant
+  type: boolean
+  default: false
+- name: MettleHomeDir
+  type: string
+  default: ''
+- name: DependsOn
+  type: object
+  default: []
+- name: AlternateJavaPath
+  type: string
+  default: ''
+
+jobs:
+  - deployment: CCMT_${{ parameters.EnvironmentID }}
+    displayName: Run CCMT across ${{ parameters.EnvironmentName }}
+    environment: ${{ parameters.EnvironmentName }}
+    dependsOn: ${{ parameters.DependsOn }}
+    variables:
+    - name: variantParams
+      ${{ if eq(parameters.UpgradeOracleVariant, true) }}:
+        value: '-param " -T " -param " -V OracleConnector=12,OracleConnectorPX=12 "'
+      ${{ else }}:
+        value: ''
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - script: |
+                echo "##vso[task.setvariable variable=PATH]${{ parameters.AlternateJavaPath }};$(PATH)"
+              displayName: "Set java version"
+              condition: ne('${{ parameters.AlternateJavaPath }}', '')
+            - script:
+                ${{ parameters.mettlecicmd }} datastage ccmt ^
+                  -domain ${{ parameters.DomainName }} ^
+                  -server ${{ parameters.EngineName }} ^
+                  -username ${{ parameters.IISUsername }} -password ${{ parameters.IISPassword }} ^
+                  -project ${{ parameters.DatastageProject }} ^
+                  -isxdirectory datastage -logfile $(System.DefaultWorkingDirectory)\log\ccmt\log\cc_migrate.log.txt -threads 4 ^
+                  -project-cache ${{ parameters.ProjectCacheDir }} ^
+                  -param " -M " ${{ variables.variantParams }}   
+              displayName: 'Run CCMT - Upgrade Stages'          
+            - ${{ if eq(parameters.PublishCompilationTests, true) }}:
+              - powershell: |
+                  $fileExists = Test-Path -Path "$(System.DefaultWorkingDirectory)/${{ parameters.TestResultFiles }}"
+                  Write-Output "##vso[task.setvariable variable=FileExists]$fileExists"
+                condition: always()
+              - task: PublishTestResults@2
+                condition: and(always(), eq(variables.fileExists, 'true'))
+                inputs:
+                  testRunTitle: 'Post-CCMT DataStage Compilation - ${{ parameters.EnvironmentName }}'
+                  testRunner: 'JUnit'
+                  testResultsFiles: ${{ parameters.TestResultFiles }}
+                  searchFolder: $(System.DefaultWorkingDirectory)
+                  failTaskOnFailedTests: true
+                displayName: 'Publish CCMT compilation results'
