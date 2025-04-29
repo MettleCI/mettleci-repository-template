@@ -1,23 +1,22 @@
+```
      __  __      _   _   _       ____ ___
     |  \/  | ___| |_| |_| | ___ / ___|_ _|
     | |\/| |/ _ \ __| __| |/ _ \ |    | |
     | |  | |  __/ |_| |_| |  __/ |___ | |
     |_|  |_|\___|\__|\__|_|\___|\____|___|
     MettleCI DevOps for DataStage
-    (C) 2021-2022 Data Migrators
+    (C) 2021-2025 Data Migrators
+```
+Your GitHub CI workflow files can be found in `.github/workflows/`. 
 
-Your GitHub CI pipeline templates can be found in the following files:
+The files supplied are:
 
-- `.github/workflows/mettleci_devops.yaml` which is a DevOps template pipeline. 
+| File                     | Description |
+|--------------------------|-------------|
+| mettleci_devops.yaml     | Principle orchestrating workflow invoked by a commit of a DataStage asset to 'main' |
+| ccmt-template.yaml       | Reusable template to invoke IBM's CCMT tool |
+| compliance-template.yaml | Reusable template to invoke MettleCI compliance testing |
+| deploy-template.yaml     | Reusable template to invoke a MettleCI deployment process |
+| unittest-template.yaml   | Reusable template to invoke MettleCI unit testing |
 
-These templates make use of the following reusable pipeline workflows:
-
-CCMT: `ccmt-template.yaml`
-Compliance: `compliance-template.yaml`
-Deploy: `deploy-template.yaml`
-Unit Test: `unittest-template.yaml`
-
-For GitHub to be able to make use of these example pipelines, first copy the .github directory
-into the root directory of the repository
-
-See the documentation [here](https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/741376173).
+See the documentation [here](https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/741376173/GitHub).

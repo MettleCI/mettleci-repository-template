@@ -228,6 +228,7 @@ jobs:
                 -transferPattern "filesystem/**/*,config/*"
 
       # This step executes a user-defined script to perform any additional deployment processes required
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/784367633/Remote+Execute+Command
       - name: Execute deploy script
         run: |
               ${{ inputs.AgentMettleCmd }} remote execute ^

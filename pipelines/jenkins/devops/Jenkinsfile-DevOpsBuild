@@ -1,9 +1,47 @@
-// Jenkins MettleCI DevOps Pipeline - Build Phase
+// ███╗   ███╗███████╗████████╗████████╗██╗     ███████╗ ██████╗██╗
+// ████╗ ████║██╔════╝╚══██╔══╝╚══██╔══╝██║     ██╔════╝██╔════╝██║
+// ██╔████╔██║█████╗     ██║      ██║   ██║     █████╗  ██║     ██║
+// ██║╚██╔╝██║██╔══╝     ██║      ██║   ██║     ██╔══╝  ██║     ██║
+// ██║ ╚═╝ ██║███████╗   ██║      ██║   ███████╗███████╗╚██████╗██║
+// ╚═╝     ╚═╝╚══════╝   ╚═╝      ╚═╝   ╚══════╝╚══════╝ ╚═════╝╚═╝
+// MettleCI DevOps for DataStage       (C) 2021-2025 Data Migrators
+//// This workflow is the control flow for implementing a DevOp process for
+// IBM DataStage v11.7 using Jenkins and the MettleCI CLI.
+// This workflow acts in a coordinating role, with most of the work being
+// done in the 'mci_*.groovy' template workflows which are invoked from this workflow.
+// These workflows are located in the a separate repository 'jenkins-templates' shared
+// library, which needs to be referenced in the `@Library` configuration below.
+//
+// Each of those template workflows is responsible for a specific task, such as:
+// - Deploying assets to a DataStage v11.x environment
+// - Running compliance tests in a DataStage v11.x environment
+// - Running unit tests in a DataStage v11.x environment
+// - Running the IBM Connector Migration Toolkit
+// - Deploying assets to a DataStage environment in Cloud Pak For Data v5.x  
+// - Running compliance tests in a DataStage environment in Cloud Pak For Data v5.x
+//
+// The template workflows contain more detailed task-specific documentation and are
+// designed to be reusable, so you can use invoke them from other workflows.
+//
+// Resources:
+// CI/CD Pipeline Developers Guide
+// See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/1266843717/Repeatable+DataStage+Project+Deployments
+//
+// MettleCI Command Line Interface
+// See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/408354840/MettleCI+CLI+Operating+Modes
+//
+
+// In summary, this workflow performs the following tasks:
+// 1. Sets up the environment for the build
+// 2. Dumps diagnostic values to the execution log (optional)
+// 3. Deploys the assets to the DataStage environment
+// 4. Runs the MettleCI compliance command to check the assets
+// 5. Runs the MettleCI unit test command to check the assets
+// 6. Tags the repository with the build number
 
 // In Jenkins configuration, under Jenkins -> Manage Jenkins -> Configure System -> Global Pipeline Libraries,
-// add a refeerence to the Jenkins MCI Shared Libraries, giving it the name "jenkins-mci-shared-libraries"
-// Doing that allows this line to reference that shared library and use the MettleCI step types
-
+// add a refeerence to the Jenkins MCI Shared Libraries, giving it an appropraite name.  You can then reference
+// that shared library in the libe below to use the MettleCI-enabled step they define.
 @Library('jenkins-templates') _
 
 pipeline {
@@ -13,6 +51,7 @@ pipeline {
         jdk 'jdk-8'
     }
 
+    // Sets up the environment for the build
     environment {
         IIS_BASE_PROJECT_NAME = '<BASE_PROJECT_NAME>'
 
@@ -32,6 +71,8 @@ pipeline {
     }
 
     stages {
+
+        // Dumps diagnostic values to the execution log (optional)
         stage("Diagnostics 11.7") {
             agent {
                 label 'mettleci && datastage11.7'
@@ -68,10 +109,14 @@ pipeline {
             }
         }
 
+        // Deploys the assets to the DataStage environment
         stage("Deploy - CI") {
             agent {
                 label 'mettleci && datastage11.7 && ci'
             }
+            // We've deploying to the CI environment, so we need to set the environment variables
+            // to point to the CI environment.  This is done by setting the ENVID variable to "ci"
+            // and the DATASTAGE_PROJECT variable to the name of our project with the '_CI' suffix.
             environment {
                 ENVID = "ci"
                 DATASTAGE_PROJECT = "${env.IIS_BASE_PROJECT_NAME}_${env.ENVID}"
@@ -85,6 +130,8 @@ pipeline {
                     string(credentialsId: "${env.SSHKEYPATH}", variable: 'SSHKEYPATH'),
                     string(credentialsId: "${env.SSHKEYPHRASE}", variable: 'SSHKEYPHRASE')
                 ]) {
+                    // Invoke the mci_deploy.groovy template workflow to deploy the assets
+                    // to the DataStage environment.  
                     mci_deploy(
                         true,
                         UPGRADE_DSPARAMS,
@@ -112,6 +159,10 @@ pipeline {
                     string(credentialsId: "${env.SSHKEYPATH}", variable: 'SSHKEYPATH'),
                     string(credentialsId: "${env.SSHKEYPHRASE}", variable: 'SSHKEYPHRASE')
                 ]) {
+                    // Invokes the mci_compliance.groovy template workflow to run the compliance tests
+                    // against the DataStage CI  environment. This runs only the CRITICAL Compliance rules.
+                    // Any failures will return a non-zero exit code and cause the pipeline to fail
+                    // The results of the compliance tests are published to the GitHub Actions UI
                     mci_compliance(
                         env.COMPLIANCE_REPO_CREDENTIALS,
                         env.COMPLIANCE_REPO_URL,
@@ -122,6 +173,10 @@ pipeline {
                         true
                     )
 
+                    // Invokes the mci_compliance.groovy template workflow to run compliance tests
+                    // against the DataStage CI environment. This runs only the NON-CRITICAL Compliance rules.
+                    // Any failures will return a zero exit code and the pipeline will continue to execute  
+                    // The results of the compliance tests will still be published to the GitHub Actions UI. 
                     mci_compliance(
                         env.COMPLIANCE_REPO_CREDENTIALS,
                         env.COMPLIANCE_REPO_URL,
@@ -132,6 +187,10 @@ pipeline {
                         false
                     )
 
+                    // Invokes the mci_unittest.groovy template workflow to run unit tests
+                    // against the DataStage CI environment.
+                    // Any failures will return a zero exit code and the pipeline will continue to execute  
+                    // The results of the compliance tests will still be published to the GitHub Actions UI. 
                     mci_unittest(
                         "CI",
                         USE_SSH_KEY,
@@ -141,6 +200,7 @@ pipeline {
             }
         } 
 
+        // Tags the repository with the build number
         stage('Success - Tag Repository') {
             agent {
                 label 'mettleci && datastage11.7'
