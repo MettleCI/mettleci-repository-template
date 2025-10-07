@@ -5,12 +5,13 @@
 // ██║ ╚═╝ ██║███████╗   ██║      ██║   ███████╗███████╗╚██████╗██║
 // ╚═╝     ╚═╝╚══════╝   ╚═╝      ╚═╝   ╚══════╝╚══════╝ ╚═════╝╚═╝
 // MettleCI DevOps for DataStage       (C) 2021-2025 Data Migrators
-//// This workflow is the control flow for implementing a DevOp process for
+//
+// This workflow is the control flow for implementing a DevOp process for
 // IBM DataStage v11.7 using Jenkins and the MettleCI CLI.
 // This workflow acts in a coordinating role, with most of the work being
 // done in the 'mci_*.groovy' template workflows which are invoked from this workflow.
-// These workflows are located in the a separate repository 'jenkins-templates' shared
-// library, which needs to be referenced in the `@Library` configuration below.
+// These workflows are located in the a separate shared repository  which needs to be
+// referenced in the `@Library` configuration below.
 //
 // Each of those template workflows is responsible for a specific task, such as:
 // - Deploying assets to a DataStage v11.x environment

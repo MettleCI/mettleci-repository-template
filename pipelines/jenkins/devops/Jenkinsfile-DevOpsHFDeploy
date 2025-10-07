@@ -3,8 +3,13 @@
 // In Jenkins configuration, under Jenkins -> Manage Jenkins -> Configure System -> Global Pipeline Libraries,
 // add a refeerence to the Jenkins MCI Shared Libraries, giving it the name "jenkins-mci-shared-libraries"
 // Doing that allows this line to reference that shared library and use the MettleCI step types
+import groovy.transform.Field
 
 @Library('jenkins-templates') _
+
+@Field
+def SELECTED_TAG = ""
+
 
 pipeline {
   	agent none

@@ -96,7 +96,7 @@ jobs:
         run: echo BaseIISProjectName=<BASE_PROJECT_NAME>>> %GITHUB_OUTPUT%
 
       # Replace <GITHUB_ORGANIZATION> with a hardcoded reference to your GitHub Organization
-      # and <COMPLAINCE_REPO_PATH> with a hardcoded reference to your GitHub Repository
+      # and <COMPLIANCE_REPO_PATH> with a hardcoded reference to your GitHub Repository
       # e.g. MyOrganization/MyComplianceRulesRepository
       - name: ComplianceRepo
         id: set-ComplianceRepo

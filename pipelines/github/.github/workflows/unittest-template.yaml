@@ -103,6 +103,7 @@ jobs:
           echo PATH=${{ inputs.AlternateJavaPath }};%PATH%>> %GITHUB_ENV%
 
       # Configure properties for the unit test execution.
+      # See https://datamigrators.atlassian.net/wiki/spaces/MCIDOC/pages/718962693/Properties+Config+Command
       - name: 'Configure Properties'
         run: |
           ${{ inputs.AgentMettleCmd }} properties config ^
@@ -132,7 +133,7 @@ jobs:
             -destination ${{ inputs.UnitTestPath }}/specs/${{ inputs.DatastageProject }}
 
       # Creates (or re-creates) a directory for unit test reports.
-      # This is done to ensure that the directory is clean before running the tests
+      # This is done to ensure that the directory is clean before running the tests.
       - name: 'Create unit test report dir'
         run: |
           cd ${{ github.workspace }}
