@@ -54,8 +54,6 @@ With MettleCI your DataStage team no longer needs to lag behind their digital co
 ├── pipelines/                          # A set of unsupported example pipeline definitions covering a range of use cases
 │   ├── azure                           # Pipeline examples for Azure Devops
 │   │   └── ...
-│   ├── bamboo/                         # Pipeline examples for Atlassian Bamboo
-│   │   └── ...
 │   ├── github/                         # Pipeline examples for GitHub
 │   │   └── ...
 │   ├── gitlab/                         # Pipeline examples for GitLab
@@ -79,6 +77,7 @@ With MettleCI your DataStage team no longer needs to lag behind their digital co
 |   ├── var.ci                          # | Search the MettleCI documentation for 'variable override files'
 |   ├── var.hf                          # | These files cover the CI, DEV, QA, and PROD environments
 |   ├── var.hf_ci                       # | as an example (as well as a special case for Hot Fixes)
+|   ├── var.lci                         # |
 |   ├── var.perf                        # |
 |   ├── var.prod                        # |
 |   ├── var.qa                          # |
